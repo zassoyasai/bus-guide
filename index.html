@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#4338ca">
+<title>宅建一問一答</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<style>
+:root {
+  --bg: #f4f5fb;
+  --surface: #ffffff;
+  --surface2: #eef0f8;
+  --ink: #1c2030;
+  --ink2: #565d75;
+  --ink3: #9096ab;
+  --brand: #4338ca;
+  --brand-ink: #ffffff;
+  --brand-soft: #e4e2fb;
+  --good: #157347;
+  --good-soft: #d9f2e5;
+  --bad: #b3261e;
+  --bad-soft: #fbe2e0;
+  --line: #dde0ec;
+  --shadow: 0 1px 3px rgba(28,32,48,.08), 0 4px 16px rgba(28,32,48,.06);
+  --radius: 16px;
+}
+:root[data-mode="dark"] {
+  --bg: #12141c;
+  --surface: #1c1f2b;
+  --surface2: #262a3a;
+  --ink: #eceef6;
+  --ink2: #a8aec4;
+  --ink3: #6b7189;
+  --brand: #8b85f4;
+  --brand-ink: #14122e;
+  --brand-soft: #2d2a55;
+  --good: #4fc98b;
+  --good-soft: #17362a;
+  --bad: #f2867e;
+  --bad-soft: #46211f;
+  --line: #333850;
+  --shadow: 0 1px 3px rgba(0,0,0,.4);
+}
+* { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html { font-size: 16px; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", "Yu Gothic UI", sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+  line-height: 1.65;
+  min-height: 100dvh;
+}
+#app { max-width: 560px; margin: 0 auto; padding: 16px 16px calc(84px + env(safe-area-inset-bottom)); }
+.view { display: none; }
+.view.active { display: block; animation: fadein .18s ease; }
+@keyframes fadein { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+.appbar { display: flex; align-items: center; justify-content: space-between; padding: 8px 2px 16px; }
+.appbar h1 { font-size: 1.15rem; font-weight: 700; letter-spacing: .02em; }
+.appbar .sub { font-size: .78rem; color: var(--ink2); }
+#modeBtn { background: var(--surface); border: 1px solid var(--line); border-radius: 50%; width: 40px; height: 40px; font-size: 1.05rem; cursor: pointer; }
+
+.card { background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow); padding: 18px; margin-bottom: 14px; }
+.card h2 { font-size: .95rem; font-weight: 700; margin-bottom: 10px; }
+.muted { color: var(--ink2); font-size: .85rem; }
+.small { font-size: .78rem; color: var(--ink3); }
+
+.today-grid { display: flex; gap: 10px; margin: 12px 0 16px; }
+.stat-tile { flex: 1; background: var(--surface2); border-radius: 12px; padding: 10px 12px; text-align: center; }
+.stat-tile .num { font-size: 1.7rem; font-weight: 800; font-variant-numeric: tabular-nums; }
+.stat-tile .lbl { font-size: .74rem; color: var(--ink2); }
+.stat-tile.due .num { color: var(--brand); }
+
+.btn {
+  display: block; width: 100%; border: none; border-radius: 14px;
+  padding: 15px; font-size: 1.02rem; font-weight: 700; cursor: pointer;
+  font-family: inherit; transition: transform .06s ease, opacity .15s;
+}
+.btn:active { transform: scale(.985); }
+.btn:disabled { opacity: .45; cursor: default; }
+.btn-primary { background: var(--brand); color: var(--brand-ink); }
+.btn-ghost { background: var(--surface2); color: var(--ink); }
+.btn-row { display: flex; gap: 10px; }
+.btn-row .btn { flex: 1; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip {
+  border: 1.5px solid var(--line); background: var(--surface); color: var(--ink2);
+  border-radius: 999px; padding: 7px 14px; font-size: .84rem; font-weight: 600;
+  cursor: pointer; font-family: inherit;
+}
+.chip.on { background: var(--brand-soft); border-color: var(--brand); color: var(--brand); }
+.chip .cnt { font-size: .74rem; opacity: .85; margin-left: 4px; font-variant-numeric: tabular-nums; }
+
+/* study */
+.study-top { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+#quitBtn { background: none; border: none; font-size: 1.3rem; color: var(--ink3); cursor: pointer; padding: 4px 8px; }
+.progressbar { flex: 1; height: 8px; background: var(--surface2); border-radius: 99px; overflow: hidden; }
+.progressbar > div { height: 100%; background: var(--brand); border-radius: 99px; width: 0%; transition: width .25s ease; }
+#remainTxt { font-size: .8rem; color: var(--ink2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+.qmeta { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+.badge { font-size: .72rem; font-weight: 700; padding: 3px 10px; border-radius: 99px; background: var(--brand-soft); color: var(--brand); }
+.badge.newq { background: var(--good-soft); color: var(--good); }
+#qText { font-size: 1.06rem; font-weight: 600; line-height: 1.8; min-height: 7.2em; }
+
+.ox-row { display: flex; gap: 12px; margin-top: 16px; }
+.ox { flex: 1; border: 2px solid var(--line); background: var(--surface); border-radius: 16px; padding: 18px 0 14px; cursor: pointer; font-family: inherit; }
+.ox .mark { font-size: 1.9rem; font-weight: 800; display: block; line-height: 1.2; }
+.ox .lbl { font-size: .78rem; color: var(--ink2); }
+.ox-o .mark { color: var(--good); }
+.ox-x .mark { color: var(--bad); }
+.ox:active { transform: scale(.98); }
+
+.result { border-radius: 14px; padding: 12px 14px; margin-bottom: 12px; font-weight: 700; display: flex; align-items: center; gap: 10px; }
+.result .ic { font-size: 1.3rem; }
+.result.ok { background: var(--good-soft); color: var(--good); }
+.result.ng { background: var(--bad-soft); color: var(--bad); }
+.exp-label { font-size: .76rem; font-weight: 700; color: var(--ink3); letter-spacing: .08em; margin-bottom: 4px; }
+#expText { font-size: .93rem; color: var(--ink); }
+.rate-row { display: flex; gap: 8px; margin-top: 16px; }
+.rate-row .btn { flex: 1; padding: 12px 4px; font-size: .92rem; }
+.rate-row .iv { display: block; font-size: .7rem; font-weight: 600; opacity: .75; margin-top: 2px; }
+.btn-hard { background: var(--surface2); color: var(--ink); }
+.btn-good { background: var(--brand); color: var(--brand-ink); }
+.btn-easy { background: var(--good-soft); color: var(--good); }
+
+/* done */
+.done-hero { text-align: center; padding: 30px 0 10px; }
+.done-hero .big { font-size: 2.6rem; }
+.done-hero h2 { font-size: 1.2rem; margin: 8px 0 4px; }
+
+/* stats */
+.bar-row { margin-bottom: 14px; }
+.bar-row .bar-head { display: flex; justify-content: space-between; font-size: .84rem; margin-bottom: 4px; }
+.bar-row .bar-head b { font-weight: 700; }
+.bar-track { height: 10px; background: var(--surface2); border-radius: 99px; overflow: hidden; }
+.bar-fill { height: 100%; background: var(--brand); border-radius: 99px; }
+.bar-fill.mastered { background: var(--good); }
+table.mini { width: 100%; border-collapse: collapse; font-size: .85rem; }
+table.mini td { padding: 6px 4px; border-bottom: 1px solid var(--line); }
+table.mini td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+table.mini tr:last-child td { border-bottom: none; }
+
+/* settings */
+.set-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line); gap: 12px; }
+.set-row:last-child { border-bottom: none; }
+select, textarea {
+  font-family: inherit; font-size: .9rem; color: var(--ink);
+  background: var(--surface2); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px;
+}
+textarea { width: 100%; min-height: 110px; resize: vertical; }
+.danger { color: var(--bad); }
+
+/* bottom nav */
+nav {
+  position: fixed; bottom: 0; left: 0; right: 0; z-index: 10;
+  background: var(--surface); border-top: 1px solid var(--line);
+  display: flex; justify-content: space-around;
+  padding: 6px 0 calc(6px + env(safe-area-inset-bottom));
+}
+nav button {
+  background: none; border: none; font-family: inherit; cursor: pointer;
+  color: var(--ink3); font-size: .68rem; font-weight: 600;
+  display: flex; flex-direction: column; align-items: center; gap: 2px; width: 72px; padding: 4px 0;
+}
+nav button .ic { font-size: 1.25rem; line-height: 1.1; }
+nav button.on { color: var(--brand); }
+body.studying nav { display: none; }
+
+.toast {
+  position: fixed; left: 50%; bottom: 100px; transform: translateX(-50%);
+  background: var(--ink); color: var(--bg); padding: 10px 18px; border-radius: 99px;
+  font-size: .85rem; font-weight: 600; opacity: 0; pointer-events: none; transition: opacity .25s; z-index: 50;
+  max-width: 90vw; text-align: center;
+}
+.toast.show { opacity: .95; }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- ホーム -->
+  <section id="view-home" class="view active">
+    <div class="appbar">
+      <div>
+        <h1>宅建一問一答</h1>
+        <div class="sub" id="homeDate"></div>
+      </div>
+      <button id="modeBtn" title="表示モード切替">🌙</button>
+    </div>
+
+    <div class="card">
+      <h2>今日の学習</h2>
+      <div class="today-grid">
+        <div class="stat-tile due"><span class="num" id="dueNum">0</span><span class="lbl">復習</span></div>
+        <div class="stat-tile"><span class="num" id="newNum">0</span><span class="lbl">新規</span></div>
+        <div class="stat-tile"><span class="num" id="doneNum">0</span><span class="lbl">学習済み</span></div>
+      </div>
+      <button class="btn btn-primary" id="startBtn">学習を始める</button>
+      <button class="btn btn-ghost" id="extraBtn" style="margin-top:8px; display:none;">追加で学習する（＋10問）</button>
+      <p class="small" id="streakTxt" style="margin-top:10px;"></p>
+    </div>
+
+    <div class="card">
+      <h2>出題分野</h2>
+      <div class="chips" id="catChips"></div>
+      <p class="small" style="margin-top:10px;">忘却曲線に合わせて、間違えた問題ほど早く再出題されます。毎日コツコツ続けるのが最も効率的です。</p>
+    </div>
+  </section>
+
+  <!-- 学習 -->
+  <section id="view-study" class="view">
+    <div class="study-top">
+      <button id="quitBtn" title="学習を中断">✕</button>
+      <div class="progressbar"><div id="progFill"></div></div>
+      <span id="remainTxt"></span>
+    </div>
+    <div class="card">
+      <div class="qmeta">
+        <span class="badge" id="qCat"></span>
+        <span class="badge newq" id="qNew" style="display:none;">新規</span>
+      </div>
+      <p id="qText"></p>
+
+      <div class="ox-row" id="oxRow">
+        <button class="ox ox-o" id="btnO"><span class="mark">○</span><span class="lbl">正しい</span></button>
+        <button class="ox ox-x" id="btnX"><span class="mark">×</span><span class="lbl">誤り</span></button>
+      </div>
+
+      <div id="answerArea" style="display:none;">
+        <div class="result" id="resultBanner"><span class="ic"></span><span class="txt"></span></div>
+        <p class="exp-label">解説</p>
+        <p id="expText"></p>
+        <div class="rate-row" id="rateRow"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 学習完了 -->
+  <section id="view-done" class="view">
+    <div class="card done-hero">
+      <div class="big">🎉</div>
+      <h2>今日のセッション完了！</h2>
+      <p class="muted" id="doneSummary"></p>
+      <div class="today-grid" style="margin-top:18px;">
+        <div class="stat-tile"><span class="num" id="doneCorrect">0</span><span class="lbl">正解 ✓</span></div>
+        <div class="stat-tile"><span class="num" id="doneWrong">0</span><span class="lbl">不正解 ✗</span></div>
+        <div class="stat-tile"><span class="num" id="doneAcc">-</span><span class="lbl">正答率</span></div>
+      </div>
+      <button class="btn btn-primary" id="doneHomeBtn" style="margin-top:10px;">ホームへ戻る</button>
+    </div>
+  </section>
+
+  <!-- 統計 -->
+  <section id="view-stats" class="view">
+    <div class="appbar"><h1>統計</h1></div>
+    <div class="card">
+      <div class="today-grid">
+        <div class="stat-tile"><span class="num" id="stTotal">0</span><span class="lbl">総問題数</span></div>
+        <div class="stat-tile"><span class="num" id="stLearned">0</span><span class="lbl">学習済み</span></div>
+        <div class="stat-tile"><span class="num" id="stMastered">0</span><span class="lbl">習得済み</span></div>
+      </div>
+      <p class="small">「習得済み」は復習間隔が3週間以上に達した問題です。</p>
+    </div>
+    <div class="card">
+      <h2>分野別の進捗</h2>
+      <div id="catBars"></div>
+    </div>
+    <div class="card">
+      <h2>これからの復習予定</h2>
+      <table class="mini" id="forecastTable"></table>
+    </div>
+    <div class="card">
+      <h2>学習記録</h2>
+      <table class="mini" id="recordTable"></table>
+    </div>
+  </section>
+
+  <!-- 設定 -->
+  <section id="view-settings" class="view">
+    <div class="appbar"><h1>設定</h1></div>
+    <div class="card">
+      <div class="set-row">
+        <div>1日の新規問題数<br><span class="small">毎日新しく学ぶ問題の上限</span></div>
+        <select id="newPerDaySel">
+          <option value="10">10問</option>
+          <option value="20" selected>20問</option>
+          <option value="30">30問</option>
+          <option value="50">50問</option>
+          <option value="9999">無制限</option>
+        </select>
+      </div>
+    </div>
+    <div class="card">
+      <h2>問題の追加（インポート）</h2>
+      <p class="small" style="margin-bottom:8px;">
+        お手持ちの問題集（PDFなど）をJSON形式に変換して貼り付けると、問題を追加できます。形式：<br>
+        <code>[{"q":"問題文","a":true,"exp":"解説","cat":"宅建業法"}]</code><br>
+        a は true=○ / false=×、cat は「宅建業法・権利関係・法令上の制限・税・その他」のいずれか。
+      </p>
+      <textarea id="importArea" placeholder='[{"q":"...","a":true,"exp":"...","cat":"宅建業法"}]'></textarea>
+      <button class="btn btn-ghost" id="importBtn" style="margin-top:8px;">問題を追加する</button>
+      <p class="small" id="customCount" style="margin-top:8px;"></p>
+    </div>
+    <div class="card">
+      <h2>データ管理</h2>
+      <div class="btn-row">
+        <button class="btn btn-ghost" id="exportBtn">バックアップ書出し</button>
+        <button class="btn btn-ghost" id="restoreBtn">読込み</button>
+      </div>
+      <input type="file" id="restoreFile" accept="application/json" style="display:none;">
+      <button class="btn btn-ghost danger" id="resetBtn" style="margin-top:8px;">学習履歴をリセット</button>
+      <p class="small" style="margin-top:10px;">学習データはこの端末のブラウザ内にのみ保存されます。機種変更の前にはバックアップの書出しをおすすめします。</p>
+    </div>
+  </section>
+</div>
+
+<nav>
+  <button data-nav="home" class="on"><span class="ic">🏠</span>ホーム</button>
+  <button data-nav="stats"><span class="ic">📊</span>統計</button>
+  <button data-nav="settings"><span class="ic">⚙️</span>設定</button>
+</nav>
+
+<div class="toast" id="toast"></div>
+
+<script src="data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

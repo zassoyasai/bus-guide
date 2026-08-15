@@ -1,0 +1,19 @@
+{
+  "name": "宅建一問一答",
+  "short_name": "宅建一問一答",
+  "description": "忘却曲線に合わせて復習できる宅建士試験の一問一答アプリ",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f4f5fb",
+  "theme_color": "#4338ca",
+  "lang": "ja",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
