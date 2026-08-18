@@ -150,6 +150,14 @@ function idbGet(key) {
     req.onerror = () => rej(req.error);
   }));
 }
+function idbDel(key) {
+  return idbOpen().then((db) => new Promise((res, rej) => {
+    const tx = db.transaction("imgs", "readwrite");
+    tx.objectStore("imgs").delete(key);
+    tx.oncomplete = () => res();
+    tx.onerror = () => rej(tx.error);
+  }));
+}
 function idbClear() {
   return idbOpen().then((db) => new Promise((res, rej) => {
     const tx = db.transaction("imgs", "readwrite");
@@ -175,13 +183,68 @@ function nextImgId() {
   store.imgSeq = (store.imgSeq || 0) + 1;
   return "i" + store.imgSeq;
 }
-function addImgCard(cat, qBlob, aBlob) {
+// 画像内容のフィンガープリント（重複検出用）
+async function blobHash(blob) {
+  try {
+    const d = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer());
+    return Array.from(new Uint8Array(d).slice(0, 12)).map((x) => x.toString(16).padStart(2, "0")).join("");
+  } catch (e) {
+    // 非セキュアコンテキスト用フォールバック（FNV-1a・先頭16KB＋サイズ）
+    const buf = new Uint8Array(await blob.slice(0, 16384).arrayBuffer());
+    let hv = 0x811c9dc5;
+    for (let i = 0; i < buf.length; i++) { hv ^= buf[i]; hv = Math.imul(hv, 0x01000193); }
+    return "f" + (hv >>> 0).toString(16) + "-" + blob.size;
+  }
+}
+async function pairHash(qBlob, aBlob) {
+  return (await blobHash(qBlob)) + ":" + (await blobHash(aBlob));
+}
+// 追加（同一内容のカードが既にあればスキップして null を返す）
+async function addImgCard(cat, qBlob, aBlob) {
+  const h = await pairHash(qBlob, aBlob);
+  if (store.custom.some((c) => c.type === "img" && c.h === h)) return null;
   const id = nextImgId();
-  return Promise.all([idbPut(id + "_q", qBlob), idbPut(id + "_a", aBlob)]).then(() => {
-    store.custom.push({ id, cat, type: "img", a: true, q: "（画像カード " + id + "）", e: "" });
-    save();
-    return id;
-  });
+  await Promise.all([idbPut(id + "_q", qBlob), idbPut(id + "_a", aBlob)]);
+  store.custom.push({ id, cat, type: "img", a: true, q: "（画像カード " + id + "）", e: "", h });
+  save();
+  return id;
+}
+// カード削除（画像カード・追加問題共通）
+async function deleteCard(id) {
+  const q = store.custom.find((c) => c.id === id);
+  store.custom = store.custom.filter((c) => c.id !== id);
+  delete store.cards[id];
+  save();
+  if (q && q.type === "img") {
+    try { await idbDel(id + "_q"); await idbDel(id + "_a"); } catch (e) {}
+  }
+}
+// 重複画像カードの一括削除（学習の進んでいる方を残す）
+async function dedupeImgCards(progress) {
+  const cards = imgCards();
+  for (let i = 0; i < cards.length; i++) {
+    const c = cards[i];
+    if (!c.h) {
+      const [q, a] = await Promise.all([idbGet(c.id + "_q"), idbGet(c.id + "_a")]);
+      c.h = (q && a) ? await pairHash(q, a) : "missing:" + c.id;
+    }
+    if (progress && (i + 1) % 200 === 0) progress(i + 1, cards.length);
+  }
+  const score = (c) => {
+    const s = store.cards[c.id];
+    return s ? s.reps * 10 + s.c + s.w : 0;
+  };
+  const keep = new Map();
+  const toDelete = [];
+  for (const c of cards) {
+    const prev = keep.get(c.h);
+    if (!prev) { keep.set(c.h, c); continue; }
+    if (score(c) > score(prev)) { toDelete.push(prev); keep.set(c.h, c); }
+    else toDelete.push(c);
+  }
+  for (const c of toDelete) await deleteCard(c.id);
+  save();
+  return toDelete.length;
 }
 
 // ---------- セッション ----------
@@ -531,6 +594,7 @@ function renderSettings() {
   const nImg = imgCards().length;
   document.getElementById("imgCount").textContent = nImg > 0 ? `追加済みの画像カード：${nImg}枚` : "";
   document.getElementById("imgDeleteBtn").style.display = nImg > 0 ? "" : "none";
+  document.getElementById("imgDedupBtn").style.display = nImg > 0 ? "" : "none";
 }
 document.getElementById("newPerDaySel").addEventListener("change", (e) => {
   store.settings.newPerDay = parseInt(e.target.value, 10);
@@ -631,11 +695,12 @@ document.getElementById("pairFiles").addEventListener("change", async (e) => {
   }
   const cat = document.getElementById("imgCatSel").value;
   try {
+    let added = 0, dup = 0;
     for (let i = 0; i < files.length; i += 2) {
-      await addImgCard(cat, files[i], files[i + 1]);
+      (await addImgCard(cat, files[i], files[i + 1])) ? added++ : dup++;
     }
     renderSettings();
-    toast(`画像カードを${files.length / 2}枚追加しました`);
+    toast(`画像カードを${added}枚追加しました${dup ? `（重複${dup}枚スキップ）` : ""}`);
   } catch (err) {
     toast("画像の保存に失敗しました（端末の空き容量をご確認ください）");
   }
@@ -696,16 +761,45 @@ document.getElementById("zipFile").addEventListener("change", async (e) => {
     const imgs = await readZipImages(file);
     if (imgs.length === 0) { toast("ZIP内に画像が見つかりませんでした"); return; }
     if (imgs.length % 2 !== 0) { toast(`画像が${imgs.length}枚（奇数）のため取り込めません`); return; }
+    let added = 0, dup = 0;
     for (let i = 0; i < imgs.length; i += 2) {
-      await addImgCard(cat, imgs[i].blob, imgs[i + 1].blob);
+      (await addImgCard(cat, imgs[i].blob, imgs[i + 1].blob)) ? added++ : dup++;
       if ((i / 2 + 1) % 100 === 0) toast(`取り込み中… ${i / 2 + 1}/${imgs.length / 2}枚`);
     }
     renderSettings();
     renderHome();
-    toast(`画像カードを${imgs.length / 2}枚追加しました`);
+    toast(`画像カードを${added}枚追加しました${dup ? `（重複${dup}枚スキップ）` : ""}`);
   } catch (err) {
     toast("取り込みに失敗しました：" + (err && err.message ? err.message : "不明なエラー"));
   }
+});
+
+// 重複カードの一括削除
+document.getElementById("imgDedupBtn").addEventListener("click", async () => {
+  if (!confirm("同じ内容の画像カードを検出し、重複分を削除します（学習が進んでいる方を残します）。実行しますか？")) return;
+  toast("重複を確認しています…");
+  try {
+    const removed = await dedupeImgCards((done, total) => toast(`確認中… ${done}/${total}枚`));
+    renderSettings();
+    renderHome();
+    toast(removed > 0 ? `重複カードを${removed}枚削除しました` : "重複はありませんでした");
+  } catch (err) {
+    toast("重複の確認に失敗しました");
+  }
+});
+
+// 学習画面：現在のカードを削除
+document.getElementById("delCardBtn").addEventListener("click", async () => {
+  if (!session || !session.current) return;
+  const q = questionById(session.current);
+  if (!q || !store.custom.some((c) => c.id === q.id)) { toast("このカードは削除できません"); return; }
+  if (!confirm("表示中のカードを削除しますか？（元に戻せません）")) return;
+  const id = q.id;
+  await deleteCard(id);
+  session.queue = session.queue.filter((x) => x !== id);
+  session.seen.delete(id);
+  toast("カードを削除しました");
+  nextQuestion();
 });
 
 // 全削除
@@ -815,13 +909,17 @@ document.getElementById("cropSaveBtn").addEventListener("click", () => {
       updateCropUI();
     } else {
       try {
-        await addImgCard(document.getElementById("imgCatSel").value, crop.pendingQ, blob);
-        crop.count++;
+        const id = await addImgCard(document.getElementById("imgCatSel").value, crop.pendingQ, blob);
         crop.pendingQ = null;
         crop.expecting = "q";
         resetCropSelection();
+        if (id) {
+          crop.count++;
+          toast(`カードを追加しました（${crop.count}枚目）`);
+        } else {
+          toast("同じ内容のカードが既にあるためスキップしました");
+        }
         updateCropUI();
-        toast(`カードを追加しました（${crop.count}枚目）`);
       } catch (err) {
         toast("保存に失敗しました（端末の空き容量をご確認ください）");
       }

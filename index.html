@@ -98,6 +98,7 @@ body {
 /* study */
 .study-top { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
 #quitBtn { background: none; border: none; font-size: 1.3rem; color: var(--ink3); cursor: pointer; padding: 4px 8px; }
+#delCardBtn { background: none; border: none; font-size: 1.1rem; color: var(--ink3); cursor: pointer; padding: 4px 6px; }
 .progressbar { flex: 1; height: 8px; background: var(--surface2); border-radius: 99px; overflow: hidden; }
 .progressbar > div { height: 100%; background: var(--brand); border-radius: 99px; width: 0%; transition: width .25s ease; }
 #remainTxt { font-size: .8rem; color: var(--ink2); font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -226,6 +227,7 @@ body.studying nav { display: none; }
       <button id="quitBtn" title="学習を中断">✕</button>
       <div class="progressbar"><div id="progFill"></div></div>
       <span id="remainTxt"></span>
+      <button id="delCardBtn" title="このカードを削除">🗑</button>
     </div>
     <div class="card">
       <div class="qmeta">
@@ -376,7 +378,9 @@ body.studying nav { display: none; }
       <input type="file" id="zipFile" accept=".zip,application/zip" style="display:none;">
       <p class="small" style="margin-top:8px;">「ペアで追加」は、問題画像→解答画像の順に交互に並ぶよう選択してください（ファイル名順に2枚ずつ組になります）。</p>
       <p class="small" id="imgCount" style="margin-top:4px;"></p>
+      <button class="btn btn-ghost" id="imgDedupBtn" style="margin-top:8px; display:none;">重複カードを削除</button>
       <button class="btn btn-ghost danger" id="imgDeleteBtn" style="margin-top:8px; display:none;">画像カードを全削除</button>
+      <p class="small" style="margin-top:6px;">個別のカードは、学習画面の右上の🗑ボタンで削除できます。</p>
     </div>
 
     <div class="card">
