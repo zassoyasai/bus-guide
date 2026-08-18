@@ -239,6 +239,16 @@ function renderHome() {
   });
   const startBtn = document.getElementById("startBtn");
   const extraBtn = document.getElementById("extraBtn");
+  if (allQuestions().length === 0) {
+    startBtn.textContent = "問題を取り込んで始める（設定へ）";
+    startBtn.disabled = false;
+    startBtn.dataset.mode = "import";
+    extraBtn.style.display = "none";
+    document.getElementById("streakTxt").textContent = "設定画面のインポート機能で問題を追加してください。";
+    renderCatChips();
+    return;
+  }
+  startBtn.dataset.mode = "";
   if (due + newAvail === 0) {
     startBtn.textContent = "今日の学習は完了 🎉";
     startBtn.disabled = true;
@@ -292,7 +302,10 @@ function renderCatChips() {
 }
 
 // ---------- UI: 学習 ----------
-document.getElementById("startBtn").addEventListener("click", () => startStudy(false));
+document.getElementById("startBtn").addEventListener("click", (e) => {
+  if (e.currentTarget.dataset.mode === "import") { show("settings"); return; }
+  startStudy(false);
+});
 document.getElementById("extraBtn").addEventListener("click", () => startStudy(true));
 document.getElementById("quitBtn").addEventListener("click", () => {
   if (session && session.queue.length > 0) {
