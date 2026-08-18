@@ -128,6 +128,14 @@ body {
 .btn-good { background: var(--brand); color: var(--brand-ink); }
 .btn-easy { background: var(--good-soft); color: var(--good); }
 
+.card-img { width: 100%; border-radius: 12px; border: 1px solid var(--line); margin-top: 4px; }
+#aImg { margin-bottom: 4px; }
+
+/* crop */
+#cropStage { position: relative; touch-action: none; user-select: none; -webkit-user-select: none; }
+#cropCanvas { width: 100%; display: block; border-radius: 8px; }
+#cropRect { position: absolute; border: 2px solid var(--brand); background: rgba(99,88,235,.16); display: none; pointer-events: none; border-radius: 2px; }
+
 /* done */
 .done-hero { text-align: center; padding: 30px 0 10px; }
 .done-hero .big { font-size: 2.6rem; }
@@ -225,16 +233,21 @@ body.studying nav { display: none; }
         <span class="badge newq" id="qNew" style="display:none;">新規</span>
       </div>
       <p id="qText"></p>
+      <img id="qImg" alt="問題画像" class="card-img" style="display:none;">
 
       <div class="ox-row" id="oxRow">
         <button class="ox ox-o" id="btnO"><span class="mark">○</span><span class="lbl">正しい</span></button>
         <button class="ox ox-x" id="btnX"><span class="mark">×</span><span class="lbl">誤り</span></button>
       </div>
+      <div id="revealRow" style="display:none; margin-top:16px;">
+        <button class="btn btn-primary" id="revealBtn">答えを見る</button>
+      </div>
 
       <div id="answerArea" style="display:none;">
         <div class="result" id="resultBanner"><span class="ic"></span><span class="txt"></span></div>
-        <p class="exp-label">解説</p>
+        <p class="exp-label" id="expLabel">解説</p>
         <p id="expText"></p>
+        <img id="aImg" alt="解答画像" class="card-img" style="display:none;">
         <div class="rate-row" id="rateRow"></div>
       </div>
     </div>
@@ -252,6 +265,28 @@ body.studying nav { display: none; }
         <div class="stat-tile"><span class="num" id="doneAcc">-</span><span class="lbl">正答率</span></div>
       </div>
       <button class="btn btn-primary" id="doneHomeBtn" style="margin-top:10px;">ホームへ戻る</button>
+    </div>
+  </section>
+
+  <!-- 画像切り出し -->
+  <section id="view-crop" class="view">
+    <div class="study-top">
+      <button id="cropQuit" title="切り出しを終了">✕</button>
+      <div style="flex:1;">
+        <b id="cropStep" style="font-size:.95rem;"></b>
+        <div class="small" id="cropInfo"></div>
+      </div>
+    </div>
+    <div class="card" style="padding:12px;">
+      <div id="cropStage">
+        <canvas id="cropCanvas"></canvas>
+        <div id="cropRect"></div>
+      </div>
+      <div class="btn-row" style="margin-top:10px;">
+        <button class="btn btn-ghost" id="cropRetryBtn">選び直す</button>
+        <button class="btn btn-primary" id="cropSaveBtn" disabled>問題として保存</button>
+      </div>
+      <button class="btn btn-ghost" id="cropNextPageBtn" style="margin-top:8px;">別のページ画像を開く</button>
     </div>
   </section>
 
@@ -317,6 +352,31 @@ body.studying nav { display: none; }
       <button class="btn btn-ghost" id="importBtn" style="margin-top:8px;">問題を追加する</button>
       <p class="small" id="customCount" style="margin-top:8px;"></p>
     </div>
+    <div class="card">
+      <h2>画像カード（スクショから作成）</h2>
+      <p class="small" style="margin-bottom:8px;">
+        お手持ちの教材のページを撮影・スクショした画像から、問題と解答の部分を切り出してフラッシュカードにできます。
+        カードは「答えを見る」→「もう一度／難しい／普通／簡単」で評価するAnki方式で出題されます。
+        画像は<b>この端末のブラウザ内にのみ</b>保存されます。他人への配布は行わないでください。
+      </p>
+      <div class="set-row" style="border-bottom:none; padding:4px 0 10px;">
+        <div>取り込む分野</div>
+        <select id="imgCatSel">
+          <option value="gyo">宅建業法</option>
+          <option value="ken">権利関係</option>
+          <option value="hor">法令上の制限</option>
+          <option value="zei">税・その他</option>
+        </select>
+      </div>
+      <button class="btn btn-primary" id="cropStartBtn">ページ画像から切り出して追加</button>
+      <button class="btn btn-ghost" id="pairAddBtn" style="margin-top:8px;">切り出し済み画像をペアで追加</button>
+      <input type="file" id="cropFile" accept="image/*" style="display:none;">
+      <input type="file" id="pairFiles" accept="image/*" multiple style="display:none;">
+      <p class="small" style="margin-top:8px;">「ペアで追加」は、問題画像→解答画像の順に交互に並ぶよう選択してください（ファイル名順に2枚ずつ組になります）。</p>
+      <p class="small" id="imgCount" style="margin-top:4px;"></p>
+      <button class="btn btn-ghost danger" id="imgDeleteBtn" style="margin-top:8px; display:none;">画像カードを全削除</button>
+    </div>
+
     <div class="card">
       <h2>データ管理</h2>
       <div class="btn-row">

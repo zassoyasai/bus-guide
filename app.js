@@ -123,6 +123,67 @@ function shuffle(arr) {
   return arr;
 }
 
+// ---------- 画像ストレージ (IndexedDB) ----------
+let idbPromise = null;
+function idbOpen() {
+  if (idbPromise) return idbPromise;
+  idbPromise = new Promise((res, rej) => {
+    const r = indexedDB.open("takken1q_img", 1);
+    r.onupgradeneeded = () => r.result.createObjectStore("imgs");
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+  return idbPromise;
+}
+function idbPut(key, val) {
+  return idbOpen().then((db) => new Promise((res, rej) => {
+    const tx = db.transaction("imgs", "readwrite");
+    tx.objectStore("imgs").put(val, key);
+    tx.oncomplete = () => res();
+    tx.onerror = () => rej(tx.error);
+  }));
+}
+function idbGet(key) {
+  return idbOpen().then((db) => new Promise((res, rej) => {
+    const req = db.transaction("imgs").objectStore("imgs").get(key);
+    req.onsuccess = () => res(req.result || null);
+    req.onerror = () => rej(req.error);
+  }));
+}
+function idbClear() {
+  return idbOpen().then((db) => new Promise((res, rej) => {
+    const tx = db.transaction("imgs", "readwrite");
+    tx.objectStore("imgs").clear();
+    tx.oncomplete = () => res();
+    tx.onerror = () => rej(tx.error);
+  }));
+}
+async function showStoredImg(key, el) {
+  el.removeAttribute("src");
+  try {
+    const blob = await idbGet(key);
+    if (!blob) throw new Error("missing");
+    const url = URL.createObjectURL(blob);
+    el.onload = () => URL.revokeObjectURL(url);
+    el.src = url;
+  } catch (e) {
+    el.alt = "画像が見つかりません（画像カードはバックアップに含まれません）";
+  }
+}
+function isImgCard(q) { return q && q.type === "img"; }
+function nextImgId() {
+  store.imgSeq = (store.imgSeq || 0) + 1;
+  return "i" + store.imgSeq;
+}
+function addImgCard(cat, qBlob, aBlob) {
+  const id = nextImgId();
+  return Promise.all([idbPut(id + "_q", qBlob), idbPut(id + "_a", aBlob)]).then(() => {
+    store.custom.push({ id, cat, type: "img", a: true, q: "（画像カード " + id + "）", e: "" });
+    save();
+    return id;
+  });
+}
+
 // ---------- セッション ----------
 let session = null; // {queue: [ids], total, correct, wrong, current, answered}
 
@@ -150,10 +211,10 @@ function buildSession(extra = false) {
 }
 
 // ---------- UI: ビュー切替 ----------
-const views = ["home", "study", "done", "stats", "settings"];
+const views = ["home", "study", "done", "crop", "stats", "settings"];
 function show(view) {
   views.forEach((v) => document.getElementById("view-" + v).classList.toggle("active", v === view));
-  document.body.classList.toggle("studying", view === "study" || view === "done");
+  document.body.classList.toggle("studying", view === "study" || view === "done" || view === "crop");
   document.querySelectorAll("nav button").forEach((b) =>
     b.classList.toggle("on", b.dataset.nav === view)
   );
@@ -252,10 +313,16 @@ function nextQuestion() {
   session.answered = false;
   const q = questionById(session.current);
   const card = store.cards[q.id];
+  const img = isImgCard(q);
   document.getElementById("qCat").textContent = catLabel(q.cat);
   document.getElementById("qNew").style.display = (!card || card.state === "new") ? "" : "none";
-  document.getElementById("qText").textContent = q.q;
-  document.getElementById("oxRow").style.display = "";
+  document.getElementById("qText").style.display = img ? "none" : "";
+  document.getElementById("qText").textContent = img ? "" : q.q;
+  const qImg = document.getElementById("qImg");
+  qImg.style.display = img ? "" : "none";
+  if (img) showStoredImg(q.id + "_q", qImg);
+  document.getElementById("oxRow").style.display = img ? "none" : "";
+  document.getElementById("revealRow").style.display = img ? "" : "none";
   document.getElementById("answerArea").style.display = "none";
   const done = session.total - session.queue.length - 1;
   document.getElementById("progFill").style.width = `${(done / session.total) * 100}%`;
@@ -263,6 +330,43 @@ function nextQuestion() {
 }
 document.getElementById("btnO").addEventListener("click", () => answer(true));
 document.getElementById("btnX").addEventListener("click", () => answer(false));
+
+// 画像カード：答えを表示 → 自己評価（Anki方式）
+document.getElementById("revealBtn").addEventListener("click", () => {
+  if (!session || session.answered) return;
+  session.answered = true;
+  const q = questionById(session.current);
+  const card = getCard(q.id);
+  document.getElementById("resultBanner").style.display = "none";
+  document.getElementById("expLabel").textContent = "解答";
+  document.getElementById("expText").style.display = "none";
+  const aImg = document.getElementById("aImg");
+  aImg.style.display = "";
+  showStoredImg(q.id + "_a", aImg);
+  document.getElementById("revealRow").style.display = "none";
+  document.getElementById("answerArea").style.display = "";
+  const row = document.getElementById("rateRow");
+  row.innerHTML = "";
+  addRateBtn(row, "btn-hard", "もう一度", "この後再出題", () => gradeSelf(false, "again"));
+  addRateBtn(row, "btn-hard", "難しい", fmtIv(previewIv(card, "hard")), () => gradeSelf(true, "hard"));
+  addRateBtn(row, "btn-good", "普通", fmtIv(previewIv(card, "good")), () => gradeSelf(true, "good"));
+  addRateBtn(row, "btn-easy", "簡単", fmtIv(previewIv(card, "easy")), () => gradeSelf(true, "easy"));
+});
+function gradeSelf(correct, g) {
+  const q = questionById(session.current);
+  const card = getCard(q.id);
+  const wasNew = card.state === "new" && card.reps === 0;
+  const firstSeen = !session.seen.has(q.id);
+  session.seen.add(q.id);
+  if (firstSeen) {
+    if (correct) session.correct++; else session.wrong++;
+    const log = todayLog();
+    if (wasNew) log.n++; else log.r++;
+    if (correct) log.c++; else log.w++;
+  }
+  if (correct) card.c++; else card.w++;
+  grade(g);
+}
 
 function answer(pick) {
   if (!session || session.answered) return;
@@ -283,8 +387,12 @@ function answer(pick) {
   }
   if (correct) card.c++; else card.w++;
 
-  // 結果表示
+  // 結果表示（画像カード表示後の状態をリセット）
   const banner = document.getElementById("resultBanner");
+  banner.style.display = "";
+  document.getElementById("expLabel").textContent = "解説";
+  document.getElementById("expText").style.display = "";
+  document.getElementById("aImg").style.display = "none";
   banner.className = "result " + (correct ? "ok" : "ng");
   banner.querySelector(".ic").textContent = correct ? "✓" : "✗";
   banner.querySelector(".txt").textContent = correct
@@ -404,8 +512,12 @@ function renderStats() {
 // ---------- UI: 設定 ----------
 function renderSettings() {
   document.getElementById("newPerDaySel").value = String(store.settings.newPerDay);
+  const textCount = store.custom.filter((q) => q.type !== "img").length;
   document.getElementById("customCount").textContent =
-    store.custom.length > 0 ? `追加済みの問題：${store.custom.length}問` : "";
+    textCount > 0 ? `追加済みの問題：${textCount}問` : "";
+  const nImg = imgCards().length;
+  document.getElementById("imgCount").textContent = nImg > 0 ? `追加済みの画像カード：${nImg}枚` : "";
+  document.getElementById("imgDeleteBtn").style.display = nImg > 0 ? "" : "none";
 }
 document.getElementById("newPerDaySel").addEventListener("change", (e) => {
   store.settings.newPerDay = parseInt(e.target.value, 10);
@@ -489,6 +601,160 @@ document.getElementById("importBtn").addEventListener("click", () => {
   document.getElementById("importArea").value = "";
   renderSettings();
   toast(`${added}問を追加しました${skipped ? `（${skipped}件スキップ）` : ""}`);
+});
+
+// ---------- 画像カード ----------
+function imgCards() { return store.custom.filter((q) => q.type === "img"); }
+
+// ペア追加（ファイル名順に 問題→解答 の2枚組）
+document.getElementById("pairAddBtn").addEventListener("click", () => document.getElementById("pairFiles").click());
+document.getElementById("pairFiles").addEventListener("change", async (e) => {
+  const files = Array.from(e.target.files).sort((a, b) => a.name.localeCompare(b.name, "ja", { numeric: true }));
+  e.target.value = "";
+  if (files.length === 0) return;
+  if (files.length % 2 !== 0) {
+    toast(`画像が${files.length}枚（奇数）です。問題→解答の2枚1組になるよう選択してください`);
+    return;
+  }
+  const cat = document.getElementById("imgCatSel").value;
+  try {
+    for (let i = 0; i < files.length; i += 2) {
+      await addImgCard(cat, files[i], files[i + 1]);
+    }
+    renderSettings();
+    toast(`画像カードを${files.length / 2}枚追加しました`);
+  } catch (err) {
+    toast("画像の保存に失敗しました（端末の空き容量をご確認ください）");
+  }
+});
+
+// 全削除
+document.getElementById("imgDeleteBtn").addEventListener("click", async () => {
+  if (!confirm("画像カードとその学習履歴をすべて削除します。よろしいですか？")) return;
+  imgCards().forEach((q) => { delete store.cards[q.id]; });
+  store.custom = store.custom.filter((q) => q.type !== "img");
+  save();
+  try { await idbClear(); } catch (e) {}
+  renderSettings();
+  toast("画像カードを削除しました");
+});
+
+// ---------- 切り出しツール ----------
+const crop = { img: null, pendingQ: null, expecting: "q", count: 0, rect: null, dragStart: null };
+const cropCanvas = document.getElementById("cropCanvas");
+const cropStage = document.getElementById("cropStage");
+const cropRectEl = document.getElementById("cropRect");
+
+document.getElementById("cropStartBtn").addEventListener("click", () => document.getElementById("cropFile").click());
+document.getElementById("cropNextPageBtn").addEventListener("click", () => document.getElementById("cropFile").click());
+document.getElementById("cropFile").addEventListener("change", (e) => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (!file) return;
+  const img = new Image();
+  const url = URL.createObjectURL(file);
+  img.onload = () => {
+    URL.revokeObjectURL(url);
+    crop.img = img;
+    cropCanvas.width = img.naturalWidth;
+    cropCanvas.height = img.naturalHeight;
+    cropCanvas.getContext("2d").drawImage(img, 0, 0);
+    resetCropSelection();
+    if (!document.getElementById("view-crop").classList.contains("active")) {
+      crop.count = 0;
+      crop.expecting = "q";
+      crop.pendingQ = null;
+      show("crop");
+    }
+    updateCropUI();
+  };
+  img.onerror = () => toast("画像を読み込めませんでした");
+  img.src = url;
+});
+function resetCropSelection() {
+  crop.rect = null;
+  crop.dragStart = null;
+  cropRectEl.style.display = "none";
+  document.getElementById("cropSaveBtn").disabled = true;
+}
+function updateCropUI() {
+  const step = document.getElementById("cropStep");
+  const save_ = document.getElementById("cropSaveBtn");
+  if (crop.expecting === "q") {
+    step.textContent = "① 問題の部分をドラッグでなぞる";
+    save_.textContent = "問題として保存";
+  } else {
+    step.textContent = "② 解答・解説の部分をドラッグでなぞる";
+    save_.textContent = "解答として保存（カード完成）";
+  }
+  document.getElementById("cropInfo").textContent =
+    `このセッションで追加：${crop.count}枚 ・ 分野：${catLabel(document.getElementById("imgCatSel").value)}`;
+}
+function stagePos(ev) {
+  const r = cropCanvas.getBoundingClientRect();
+  const x = Math.min(Math.max(ev.clientX - r.left, 0), r.width);
+  const y = Math.min(Math.max(ev.clientY - r.top, 0), r.height);
+  return { x, y, w: r.width, h: r.height };
+}
+cropStage.addEventListener("pointerdown", (ev) => {
+  if (!crop.img) return;
+  ev.preventDefault();
+  cropStage.setPointerCapture(ev.pointerId);
+  crop.dragStart = stagePos(ev);
+});
+cropStage.addEventListener("pointermove", (ev) => {
+  if (!crop.dragStart) return;
+  const p = stagePos(ev);
+  const x = Math.min(crop.dragStart.x, p.x), y = Math.min(crop.dragStart.y, p.y);
+  const w = Math.abs(p.x - crop.dragStart.x), h = Math.abs(p.y - crop.dragStart.y);
+  Object.assign(cropRectEl.style, { display: "block", left: x + "px", top: y + "px", width: w + "px", height: h + "px" });
+  crop.rect = { x, y, w, h, viewW: p.w, viewH: p.h };
+});
+cropStage.addEventListener("pointerup", () => {
+  crop.dragStart = null;
+  if (crop.rect && crop.rect.w > 12 && crop.rect.h > 12) {
+    document.getElementById("cropSaveBtn").disabled = false;
+  }
+});
+document.getElementById("cropRetryBtn").addEventListener("click", resetCropSelection);
+document.getElementById("cropSaveBtn").addEventListener("click", () => {
+  if (!crop.rect || !crop.img) return;
+  const scaleX = cropCanvas.width / crop.rect.viewW;
+  const scaleY = cropCanvas.height / crop.rect.viewH;
+  const sx = crop.rect.x * scaleX, sy = crop.rect.y * scaleY;
+  const sw = Math.max(1, crop.rect.w * scaleX), sh = Math.max(1, crop.rect.h * scaleY);
+  const tmp = document.createElement("canvas");
+  tmp.width = sw; tmp.height = sh;
+  tmp.getContext("2d").drawImage(cropCanvas, sx, sy, sw, sh, 0, 0, sw, sh);
+  tmp.toBlob(async (blob) => {
+    if (!blob) { toast("切り出しに失敗しました"); return; }
+    if (crop.expecting === "q") {
+      crop.pendingQ = blob;
+      crop.expecting = "a";
+      resetCropSelection();
+      updateCropUI();
+    } else {
+      try {
+        await addImgCard(document.getElementById("imgCatSel").value, crop.pendingQ, blob);
+        crop.count++;
+        crop.pendingQ = null;
+        crop.expecting = "q";
+        resetCropSelection();
+        updateCropUI();
+        toast(`カードを追加しました（${crop.count}枚目）`);
+      } catch (err) {
+        toast("保存に失敗しました（端末の空き容量をご確認ください）");
+      }
+    }
+  }, "image/jpeg", 0.88);
+});
+document.getElementById("cropQuit").addEventListener("click", () => {
+  if (crop.expecting === "a" && !confirm("問題画像だけ切り出した途中のカードは破棄されます。終了しますか？")) return;
+  crop.img = null;
+  crop.pendingQ = null;
+  crop.expecting = "q";
+  show("settings");
+  if (crop.count > 0) toast(`画像カードを合計${crop.count}枚追加しました`);
 });
 
 // バックアップ
