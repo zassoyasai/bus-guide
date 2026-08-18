@@ -298,11 +298,22 @@ body.studying nav { display: none; }
     <div class="card">
       <h2>問題の追加（インポート）</h2>
       <p class="small" style="margin-bottom:8px;">
-        お手持ちの問題集（PDFなど）をJSON形式に変換して貼り付けると、問題を追加できます。形式：<br>
-        <code>[{"q":"問題文","a":true,"exp":"解説","cat":"宅建業法"}]</code><br>
-        a は true=○ / false=×、cat は「宅建業法・権利関係・法令上の制限・税・その他」のいずれか。
+        お手持ちの問題集を取り込めます（詳しい手順はIMPORT_GUIDE.mdを参照）。<b>テキスト形式</b>：1問ごとに<br>
+        <code>Q. 問題文</code><br>
+        <code>A. ○ 解説文</code>（答えが誤りなら ×）<br>
+        の2行（複数行可）を並べて貼り付けます。「問1」等の番号行も Q として認識します。<br>
+        <b>JSON形式</b>も可：<code>[{"q":"問題文","a":true,"exp":"解説","cat":"宅建業法"}]</code>
       </p>
-      <textarea id="importArea" placeholder='[{"q":"...","a":true,"exp":"...","cat":"宅建業法"}]'></textarea>
+      <div class="set-row" style="border-bottom:none; padding:4px 0 10px;">
+        <div>取り込む分野<br><span class="small">テキスト形式のとき全問に適用</span></div>
+        <select id="importCatSel">
+          <option value="gyo">宅建業法</option>
+          <option value="ken">権利関係</option>
+          <option value="hor">法令上の制限</option>
+          <option value="zei">税・その他</option>
+        </select>
+      </div>
+      <textarea id="importArea" placeholder="Q. 問題文をここに&#10;A. ○ 解説をここに&#10;Q. 次の問題文…&#10;A. × 解説…"></textarea>
       <button class="btn btn-ghost" id="importBtn" style="margin-top:8px;">問題を追加する</button>
       <p class="small" id="customCount" style="margin-top:8px;"></p>
     </div>

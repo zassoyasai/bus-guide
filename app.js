@@ -420,23 +420,71 @@ const CAT_ALIAS = {
   "法令上の制限": "hor", "法令": "hor", "hor": "hor",
   "税・その他": "zei", "税その他": "zei", "税": "zei", "その他": "zei", "zei": "zei",
 };
-document.getElementById("importBtn").addEventListener("click", () => {
-  const raw = document.getElementById("importArea").value.trim();
-  if (!raw) { toast("JSONを貼り付けてください"); return; }
-  let arr;
-  try { arr = JSON.parse(raw); } catch (e) { toast("JSONの形式が正しくありません"); return; }
-  if (!Array.isArray(arr)) { toast("配列 [ ... ] 形式で貼り付けてください"); return; }
+// テキスト形式（Q./A.形式）のパース
+const Q_START = /^(?:[QqＱ][.．:：、]?|問\s*[0-9０-９]+[.．:：、)）]?)\s*/;
+const A_LINE = /^[AaＡ][.．:：、]?\s*([○〇◯●xX×✕])\s*(.*)$/;
+function parseTextQuestions(raw) {
+  const items = [];
+  let cur = null; // {qLines: [], aMark: null, eLines: []}
+  const push = () => {
+    if (!cur) return;
+    const q = cur.qLines.join("").trim();
+    if (q && cur.aMark !== null) {
+      items.push({ q, a: cur.aMark, e: cur.eLines.join("").trim() });
+    }
+    cur = null;
+  };
+  raw.split(/\r?\n/).forEach((line) => {
+    const t = line.trim();
+    if (!t) return;
+    if (Q_START.test(t)) {
+      push();
+      cur = { qLines: [t.replace(Q_START, "")], aMark: null, eLines: [] };
+      return;
+    }
+    if (!cur) return; // 最初のQより前の行は無視
+    const m = t.match(A_LINE);
+    if (m && cur.aMark === null) {
+      cur.aMark = "○〇◯●".includes(m[1]);
+      if (m[2]) cur.eLines.push(m[2]);
+      return;
+    }
+    if (cur.aMark === null) cur.qLines.push(t);
+    else cur.eLines.push(t);
+  });
+  push();
+  return items;
+}
+function addQuestions(arr, fallbackCat) {
   let added = 0, skipped = 0;
   let maxN = store.custom.reduce((m, q) => Math.max(m, parseInt(String(q.id).slice(1), 10) || 0), 0);
   arr.forEach((item) => {
     if (!item || typeof item.q !== "string" || typeof item.a !== "boolean") { skipped++; return; }
-    const cat = CAT_ALIAS[item.cat] || "zei";
+    const cat = CAT_ALIAS[item.cat] || fallbackCat || "zei";
     // 同一問題文の重複はスキップ
     if (allQuestions().some((q) => q.q === item.q)) { skipped++; return; }
     maxN++;
     store.custom.push({ id: "u" + maxN, cat, a: item.a, q: item.q, e: item.exp || item.e || "" });
     added++;
   });
+  return { added, skipped };
+}
+document.getElementById("importBtn").addEventListener("click", () => {
+  const raw = document.getElementById("importArea").value.trim();
+  if (!raw) { toast("テキストまたはJSONを貼り付けてください"); return; }
+  const fallbackCat = document.getElementById("importCatSel").value;
+  let arr;
+  if (raw.startsWith("[") || raw.startsWith("{")) {
+    try { arr = JSON.parse(raw); } catch (e) { toast("JSONの形式が正しくありません"); return; }
+    if (!Array.isArray(arr)) { toast("配列 [ ... ] 形式で貼り付けてください"); return; }
+  } else {
+    arr = parseTextQuestions(raw);
+    if (arr.length === 0) {
+      toast("問題を認識できませんでした。「Q. 問題文」「A. ○ 解説」の形式をご確認ください");
+      return;
+    }
+  }
+  const { added, skipped } = addQuestions(arr, fallbackCat);
   save();
   document.getElementById("importArea").value = "";
   renderSettings();
