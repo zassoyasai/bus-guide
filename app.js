@@ -628,6 +628,73 @@ document.getElementById("pairFiles").addEventListener("change", async (e) => {
   }
 });
 
+// ZIP一括追加（無圧縮/deflate対応の最小ZIPリーダー）
+async function readZipImages(file) {
+  const buf = new Uint8Array(await file.arrayBuffer());
+  const dv = new DataView(buf.buffer);
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 22 - 65557); i--) {
+    if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error("ZIP形式を認識できません");
+  const count = dv.getUint16(eocd + 10, true);
+  let off = dv.getUint32(eocd + 16, true);
+  const entries = [];
+  for (let i = 0; i < count; i++) {
+    if (dv.getUint32(off, true) !== 0x02014b50) throw new Error("ZIPの読み取りに失敗しました");
+    const method = dv.getUint16(off + 10, true);
+    const csize = dv.getUint32(off + 20, true);
+    const nameLen = dv.getUint16(off + 28, true);
+    const extraLen = dv.getUint16(off + 30, true);
+    const commentLen = dv.getUint16(off + 32, true);
+    const lho = dv.getUint32(off + 42, true);
+    const name = new TextDecoder().decode(buf.subarray(off + 46, off + 46 + nameLen));
+    entries.push({ name, method, csize, lho });
+    off += 46 + nameLen + extraLen + commentLen;
+  }
+  const out = [];
+  for (const e of entries) {
+    if (e.name.endsWith("/") || !/\.(jpe?g|png|webp|gif)$/i.test(e.name)) continue;
+    const nl = dv.getUint16(e.lho + 26, true);
+    const el = dv.getUint16(e.lho + 28, true);
+    const start = e.lho + 30 + nl + el;
+    const data = buf.subarray(start, start + e.csize);
+    let blob;
+    if (e.method === 0) {
+      blob = new Blob([data], { type: "image/jpeg" });
+    } else if (e.method === 8 && typeof DecompressionStream !== "undefined") {
+      blob = await new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream("deflate-raw"))).blob();
+    } else {
+      continue;
+    }
+    out.push({ name: e.name.split("/").pop(), blob });
+  }
+  out.sort((a, b) => a.name.localeCompare(b.name, "ja", { numeric: true }));
+  return out;
+}
+document.getElementById("zipAddBtn").addEventListener("click", () => document.getElementById("zipFile").click());
+document.getElementById("zipFile").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (!file) return;
+  const cat = document.getElementById("imgCatSel").value;
+  toast("ZIPを読み込んでいます…");
+  try {
+    const imgs = await readZipImages(file);
+    if (imgs.length === 0) { toast("ZIP内に画像が見つかりませんでした"); return; }
+    if (imgs.length % 2 !== 0) { toast(`画像が${imgs.length}枚（奇数）のため取り込めません`); return; }
+    for (let i = 0; i < imgs.length; i += 2) {
+      await addImgCard(cat, imgs[i].blob, imgs[i + 1].blob);
+      if ((i / 2 + 1) % 100 === 0) toast(`取り込み中… ${i / 2 + 1}/${imgs.length / 2}枚`);
+    }
+    renderSettings();
+    renderHome();
+    toast(`画像カードを${imgs.length / 2}枚追加しました`);
+  } catch (err) {
+    toast("取り込みに失敗しました：" + (err && err.message ? err.message : "不明なエラー"));
+  }
+});
+
 // 全削除
 document.getElementById("imgDeleteBtn").addEventListener("click", async () => {
   if (!confirm("画像カードとその学習履歴をすべて削除します。よろしいですか？")) return;
