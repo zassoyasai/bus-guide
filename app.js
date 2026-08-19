@@ -271,17 +271,24 @@ async function blobHash(blob) {
 async function pairHash(qBlob, aBlob) {
   return (await blobHash(qBlob)) + ":" + (await blobHash(aBlob));
 }
-// 追加。戻り値: "added"=新規追加 / "recat"=既存カードの分野を修正 / "dup"=完全な重複でスキップ
+// 追加。戻り値: "added"=新規追加 / "restored"=既存カードに画像を復元 /
+//              "recat"=既存カードの分野を修正 / "dup"=完全な重複でスキップ
 async function addImgCard(cat, qBlob, aBlob) {
   const h = await pairHash(qBlob, aBlob);
   const existing = store.custom.find((c) => c.type === "img" && c.h === h);
   if (existing) {
+    // バックアップ復元後など、メタ情報だけあって画像が無い場合は画像を再接続する
+    let restored = false;
+    if (!(await idbGet(existing.id + "_q"))) {
+      await Promise.all([idbPut(existing.id + "_q", qBlob), idbPut(existing.id + "_a", aBlob)]);
+      restored = true;
+    }
     if (existing.cat !== cat) {
       existing.cat = cat;
       save();
-      return "recat";
+      return restored ? "restored" : "recat";
     }
-    return "dup";
+    return restored ? "restored" : "dup";
   }
   const id = nextImgId();
   await Promise.all([idbPut(id + "_q", qBlob), idbPut(id + "_a", aBlob)]);
@@ -802,13 +809,14 @@ document.getElementById("pairFiles").addEventListener("change", async (e) => {
   }
   const cat = document.getElementById("imgCatSel").value;
   try {
-    let added = 0, dup = 0, recat = 0;
+    let added = 0, dup = 0, recat = 0, restored = 0;
     for (let i = 0; i < files.length; i += 2) {
       const r = await addImgCard(cat, files[i], files[i + 1]);
-      if (r === "added") added++; else if (r === "recat") recat++; else dup++;
+      if (r === "added") added++; else if (r === "recat") recat++; else if (r === "restored") restored++; else dup++;
     }
     renderSettings();
     const parts = [`${added}枚追加`];
+    if (restored) parts.push(`${restored}枚の画像を復元`);
     if (recat) parts.push(`${recat}枚の分野を「${catLabel(cat)}」に修正`);
     if (dup) parts.push(`重複${dup}枚スキップ`);
     toast(`画像カード：${parts.join("・")}`);
@@ -872,15 +880,16 @@ document.getElementById("zipFile").addEventListener("change", async (e) => {
     const imgs = await readZipImages(file);
     if (imgs.length === 0) { toast("ZIP内に画像が見つかりませんでした"); return; }
     if (imgs.length % 2 !== 0) { toast(`画像が${imgs.length}枚（奇数）のため取り込めません`); return; }
-    let added = 0, dup = 0, recat = 0;
+    let added = 0, dup = 0, recat = 0, restored = 0;
     for (let i = 0; i < imgs.length; i += 2) {
       const r = await addImgCard(cat, imgs[i].blob, imgs[i + 1].blob);
-      if (r === "added") added++; else if (r === "recat") recat++; else dup++;
+      if (r === "added") added++; else if (r === "recat") recat++; else if (r === "restored") restored++; else dup++;
       if ((i / 2 + 1) % 100 === 0) toast(`取り込み中… ${i / 2 + 1}/${imgs.length / 2}枚`);
     }
     renderSettings();
     renderHome();
     const parts = [`${added}枚追加`];
+    if (restored) parts.push(`${restored}枚の画像を復元`);
     if (recat) parts.push(`${recat}枚の分野を「${catLabel(cat)}」に修正`);
     if (dup) parts.push(`重複${dup}枚スキップ`);
     toast(`画像カード：${parts.join("・")}`);
