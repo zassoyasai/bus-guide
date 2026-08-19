@@ -604,6 +604,7 @@ function finishSession() {
   document.getElementById("doneAcc").textContent = total ? Math.round((s.correct / total) * 100) + "%" : "-";
   document.getElementById("doneSummary").textContent = `${total}問を学習しました。間違えた問題は忘却曲線に合わせて早めに再出題されます。`;
   show("done");
+  if (store.settings.ghToken && navigator.onLine) syncNow(true);
 }
 document.getElementById("doneHomeBtn").addEventListener("click", () => show("home"));
 
@@ -697,6 +698,10 @@ function renderStats() {
 function renderSettings() {
   document.getElementById("newPerDaySel").value = String(store.settings.newPerDay);
   document.getElementById("retentionSel").value = retention().toFixed(2);
+  document.getElementById("ghToken").value = store.settings.ghToken || "";
+  syncStatus(store.settings.lastSync
+    ? "最終同期: " + new Date(store.settings.lastSync).toLocaleString("ja-JP")
+    : (store.settings.ghToken ? "" : "未接続"));
   const textCount = store.custom.filter((q) => q.type !== "img").length;
   document.getElementById("customCount").textContent =
     textCount > 0 ? `追加済みの問題：${textCount}問` : "";
@@ -1061,6 +1066,139 @@ document.getElementById("cropQuit").addEventListener("click", () => {
   if (crop.count > 0) toast(`画像カードを合計${crop.count}枚追加しました`);
 });
 
+// ---------- デバイス間同期 (GitHub Gist) ----------
+const SYNC_DESC = "takken1q-sync-v1";
+const SYNC_FILE = "takken1q-sync.json";
+function ghHeaders() {
+  return { "Authorization": "token " + store.settings.ghToken, "Accept": "application/vnd.github+json" };
+}
+// 同期ペイロード（画像は含めない。画像カードはハッシュ、テキスト問題は問題文で照合する）
+function buildSyncPayload() {
+  const img = [], text = [];
+  store.custom.forEach((c) => {
+    const st = store.cards[c.id] || null;
+    if (c.type === "img") img.push({ h: c.h, cat: c.cat, st });
+    else text.push({ q: c.q, a: c.a, e: c.e, cat: c.cat, st });
+  });
+  return { v: 1, syncedAt: Date.now(), img, text, log: store.log };
+}
+// 2つのSRS状態のうち「最後に学習した方」を採用
+function newerState(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+  const la = a.last || "", lb = b.last || "";
+  if (la !== lb) return la > lb ? a : b;
+  return (b.reps || 0) > (a.reps || 0) ? b : a;
+}
+function mergeSync(remote) {
+  if (!remote || remote.v !== 1) return;
+  (remote.img || []).forEach((r) => {
+    if (!r.h) return;
+    let local = store.custom.find((c) => c.type === "img" && c.h === r.h);
+    if (!local) {
+      const id = nextImgId();
+      local = { id, cat: r.cat, type: "img", a: true, q: "（画像カード " + id + "）", e: "", h: r.h };
+      store.custom.push(local);
+    }
+    const merged = newerState(store.cards[local.id], r.st);
+    if (merged) store.cards[local.id] = merged;
+  });
+  (remote.text || []).forEach((r) => {
+    if (!r.q) return;
+    let local = store.custom.find((c) => c.type !== "img" && c.q === r.q);
+    if (!local) {
+      const maxN = store.custom.reduce((m, q) => Math.max(m, parseInt(String(q.id).slice(1), 10) || 0), 0);
+      local = { id: "u" + (maxN + 1), cat: r.cat, a: r.a, q: r.q, e: r.e || "" };
+      store.custom.push(local);
+    }
+    const merged = newerState(store.cards[local.id], r.st);
+    if (merged) store.cards[local.id] = merged;
+  });
+  Object.entries(remote.log || {}).forEach(([d, l]) => {
+    const cur = store.log[d];
+    store.log[d] = cur
+      ? { n: Math.max(cur.n, l.n), r: Math.max(cur.r, l.r), c: Math.max(cur.c, l.c), w: Math.max(cur.w, l.w) }
+      : l;
+  });
+}
+async function findOrCreateGist() {
+  if (store.settings.gistId) return store.settings.gistId;
+  const res = await fetch("https://api.github.com/gists?per_page=100", { headers: ghHeaders() });
+  if (!res.ok) throw new Error("認証エラー（トークンを確認してください）");
+  const found = (await res.json()).find((g) => g.description === SYNC_DESC);
+  if (found) {
+    store.settings.gistId = found.id;
+    save();
+    return found.id;
+  }
+  const created = await fetch("https://api.github.com/gists", {
+    method: "POST",
+    headers: ghHeaders(),
+    body: JSON.stringify({ description: SYNC_DESC, public: false, files: { [SYNC_FILE]: { content: "{}" } } }),
+  });
+  if (!created.ok) throw new Error("同期用Gistの作成に失敗しました");
+  const g = await created.json();
+  store.settings.gistId = g.id;
+  save();
+  return g.id;
+}
+let syncing = false;
+function syncStatus(m) {
+  const el = document.getElementById("syncStatus");
+  if (el) el.textContent = m;
+}
+async function syncNow(silent) {
+  if (syncing) return;
+  if (!store.settings.ghToken) {
+    if (!silent) toast("先にGitHubトークンを設定してください");
+    return;
+  }
+  syncing = true;
+  try {
+    syncStatus("同期中…");
+    const id = await findOrCreateGist();
+    const res = await fetch("https://api.github.com/gists/" + id, { headers: ghHeaders() });
+    if (!res.ok) throw new Error("同期データの取得に失敗しました");
+    const g = await res.json();
+    const file = g.files && g.files[SYNC_FILE];
+    let remote = null;
+    if (file) {
+      if (file.truncated) {
+        remote = await (await fetch(file.raw_url, { headers: ghHeaders() })).json();
+      } else {
+        try { remote = JSON.parse(file.content); } catch (e) {}
+      }
+    }
+    mergeSync(remote);
+    save();
+    const up = await fetch("https://api.github.com/gists/" + id, {
+      method: "PATCH",
+      headers: ghHeaders(),
+      body: JSON.stringify({ files: { [SYNC_FILE]: { content: JSON.stringify(buildSyncPayload()) } } }),
+    });
+    if (!up.ok) throw new Error("同期データの送信に失敗しました");
+    store.settings.lastSync = Date.now();
+    save();
+    renderHome();
+    syncStatus("最終同期: " + new Date(store.settings.lastSync).toLocaleString("ja-JP"));
+    if (!silent) toast("同期しました");
+  } catch (err) {
+    syncStatus("同期できませんでした" + (err && err.message ? "：" + err.message : "（オフラインの可能性）"));
+    if (!silent) toast("同期に失敗しました");
+  } finally {
+    syncing = false;
+  }
+}
+document.getElementById("tokenSaveBtn").addEventListener("click", () => {
+  const v = document.getElementById("ghToken").value.trim();
+  if (!v) { toast("トークンを貼り付けてください"); return; }
+  store.settings.ghToken = v;
+  store.settings.gistId = null; // トークン変更時はGistを探し直す
+  save();
+  syncNow(false);
+});
+document.getElementById("syncBtn").addEventListener("click", () => syncNow(false));
+
 // バックアップ
 document.getElementById("exportBtn").addEventListener("click", () => {
   const blob = new Blob([JSON.stringify(store)], { type: "application/json" });
@@ -1134,6 +1272,7 @@ function toast(msg) {
 // ---------- 起動 ----------
 applyMode();
 renderHome();
+if (store.settings.ghToken && navigator.onLine) setTimeout(() => syncNow(true), 800);
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
   navigator.serviceWorker.register("sw.js").catch(() => {});
 }

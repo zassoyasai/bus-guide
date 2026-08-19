@@ -15,8 +15,10 @@ self.addEventListener("activate", (e) => {
 });
 
 // ネットワーク優先・失敗時キャッシュ（更新を取り込みつつオフラインでも動作）
+// 同一オリジンのみ対象（GitHub API等の外部通信はキャッシュしない）
 self.addEventListener("fetch", (e) => {
   if (e.request.method !== "GET") return;
+  if (new URL(e.request.url).origin !== self.location.origin) return;
   e.respondWith(
     fetch(e.request)
       .then((res) => {

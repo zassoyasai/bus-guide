@@ -157,10 +157,11 @@ table.mini tr:last-child td { border-bottom: none; }
 /* settings */
 .set-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line); gap: 12px; }
 .set-row:last-child { border-bottom: none; }
-select, textarea {
+select, textarea, input[type="password"], input[type="text"] {
   font-family: inherit; font-size: .9rem; color: var(--ink);
   background: var(--surface2); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px;
 }
+input[type="password"], input[type="text"] { width: 100%; }
 textarea { width: 100%; min-height: 110px; resize: vertical; }
 .danger { color: var(--bad); }
 
@@ -392,6 +393,22 @@ body.studying nav { display: none; }
       <button class="btn btn-ghost" id="imgDedupBtn" style="margin-top:8px; display:none;">重複カードを削除</button>
       <button class="btn btn-ghost danger" id="imgDeleteBtn" style="margin-top:8px; display:none;">画像カードを全削除</button>
       <p class="small" style="margin-top:6px;">個別のカードは、学習画面の右上の🗑ボタンで削除できます。</p>
+    </div>
+
+    <div class="card">
+      <h2>デバイス間同期</h2>
+      <p class="small" style="margin-bottom:8px;">
+        GitHubの非公開Gistを使って、スマホ・PC・タブレット間で学習記録を同期します。
+        同期されるのは学習記録・カードの進捗のみで、<b>教材の画像はアップロードされません</b>（各デバイスで初回にZIPを取り込むと履歴に自動接続されます）。<br>
+        トークンの作り方：GitHub → Settings → Developer settings → Personal access tokens →
+        <b>Tokens (classic)</b> → Generate new token (classic) → スコープは <b>gist のみ</b>にチェック → 生成された ghp_… を下に貼り付け。
+      </p>
+      <input type="password" id="ghToken" placeholder="ghp_ で始まるトークンを貼り付け" autocomplete="off">
+      <div class="btn-row" style="margin-top:8px;">
+        <button class="btn btn-ghost" id="tokenSaveBtn">接続</button>
+        <button class="btn btn-primary" id="syncBtn">今すぐ同期</button>
+      </div>
+      <p class="small" id="syncStatus" style="margin-top:8px;"></p>
     </div>
 
     <div class="card">
