@@ -10,7 +10,7 @@ function defaultStore() {
     cards: {},              // id -> {iv, ease, due, reps, lapses, state, c, w}
     log: {},                // "YYYY-MM-DD" -> {n, r, c, w}
     custom: [],             // ユーザー追加問題
-    settings: { newPerDay: 20, cats: ["gyo", "ken", "hor", "zei"], mode: "auto" },
+    settings: { newPerDay: 20, cats: ["gyo", "ken", "hor", "zei"], mode: "auto", retention: 0.9 },
   };
 }
 let store = load();
@@ -19,6 +19,7 @@ function load() {
     const raw = localStorage.getItem(STORE_KEY);
     if (!raw) return defaultStore();
     const s = JSON.parse(raw);
+    migrateCards(s);
     return Object.assign(defaultStore(), s, {
       settings: Object.assign(defaultStore().settings, s.settings || {}),
     });
@@ -32,11 +33,26 @@ function save() {
 }
 
 // ---------- 日付 ----------
+function fmtDate(d) {
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
 function todayStr(offset = 0) {
   const d = new Date();
   d.setDate(d.getDate() + offset);
-  const p = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  return fmtDate(d);
+}
+function parseDateStr(s) {
+  const [y, m, d] = s.split("-").map(Number);
+  return new Date(y, m - 1, d);
+}
+function addDaysStr(s, n) {
+  const d = parseDateStr(s);
+  d.setDate(d.getDate() + n);
+  return fmtDate(d);
+}
+function daysBetween(a, b) {
+  return Math.round((parseDateStr(b) - parseDateStr(a)) / 864e5);
 }
 
 // ---------- 問題 ----------
@@ -48,39 +64,95 @@ function questionById(id) {
 }
 function catLabel(code) { return CATEGORIES[code] || code; }
 
-// ---------- SRSコア (SM-2変形 / Ankiと同系) ----------
+// ---------- SRSコア (FSRS: 難易度D・安定性S・検索可能性Rの三成分モデル) ----------
+// Free Spaced Repetition Scheduler (MIT License, open-spaced-repetition) のFSRS-5公開パラメータ
+const FSRS_W = [0.40255, 1.18385, 3.173, 15.69105, 7.1949, 0.5345, 1.4604, 0.0046, 1.54575, 0.1192, 1.01925, 1.9395, 0.11, 0.29605, 2.2698, 0.2315, 2.9898, 0.51655, 0.6621];
+const F_FACTOR = 19 / 81;
+const F_DECAY = -0.5;
+const MAX_IV = 365;
+const GRADE_NUM = { again: 1, hard: 2, good: 3, easy: 4 };
+function clampNum(v, lo, hi) { return Math.min(hi, Math.max(lo, v)); }
+
+function retention() { return store.settings.retention || 0.9; }
+// 検索可能性: 最終復習からt日後に思い出せる確率
+function fsrsR(t, s) { return Math.pow(1 + F_FACTOR * t / s, F_DECAY); }
+// 目標保持率rを満たす復習間隔
+function fsrsInterval(s, r) {
+  return clampNum(Math.round(s / F_FACTOR * (Math.pow(r, 1 / F_DECAY) - 1)), 1, MAX_IV);
+}
+function fsrsS0(g) { return FSRS_W[g - 1]; }
+function fsrsD0(g) { return clampNum(FSRS_W[4] - Math.exp(FSRS_W[5] * (g - 1)) + 1, 1, 10); }
+function fsrsNextD(d, g) {
+  const dd = d - FSRS_W[6] * (g - 3);
+  return clampNum(FSRS_W[7] * fsrsD0(4) + (1 - FSRS_W[7]) * dd, 1, 10);
+}
+function fsrsNextS(d, s, r, g) {
+  const hard = g === 2 ? FSRS_W[15] : 1;
+  const easy = g === 4 ? FSRS_W[16] : 1;
+  return s * (1 + Math.exp(FSRS_W[8]) * (11 - d) * Math.pow(s, -FSRS_W[9]) * (Math.exp(FSRS_W[10] * (1 - r)) - 1) * hard * easy);
+}
+function fsrsNextSFail(d, s, r) {
+  const sf = FSRS_W[11] * Math.pow(d, -FSRS_W[12]) * (Math.pow(s + 1, FSRS_W[13]) - 1) * Math.exp(FSRS_W[14] * (1 - r));
+  return Math.min(sf, s);
+}
+function elapsedDays(card) {
+  return card.last ? Math.max(0, daysBetween(card.last, todayStr())) : 0;
+}
+
 function getCard(id) {
   if (!store.cards[id]) {
-    store.cards[id] = { iv: 0, ease: 2.5, due: null, reps: 0, lapses: 0, state: "new", c: 0, w: 0 };
+    store.cards[id] = { s: null, d: null, iv: 0, due: null, last: null, reps: 0, lapses: 0, state: "new", c: 0, w: 0 };
   }
   return store.cards[id];
 }
+// 評価ボタンに表示する次回間隔のプレビュー
 function previewIv(card, grade) {
-  const ease = card.ease;
-  const learning = card.state !== "review" || card.iv < 1;
-  let iv;
-  if (grade === "hard") iv = learning ? 1 : Math.max(card.iv + 1, Math.round(card.iv * 1.2));
-  else if (grade === "good") iv = learning ? 1 : Math.round(card.iv * ease);
-  else if (grade === "easy") iv = learning ? 4 : Math.round(card.iv * ease * 1.3);
-  else return 0;
-  return Math.min(Math.max(iv, 1), 365);
+  const g = GRADE_NUM[grade];
+  if (!g || g === 1) return 0;
+  const r = retention();
+  let s;
+  if (card.state === "new" || card.s == null) {
+    s = fsrsS0(g);
+  } else {
+    const R = fsrsR(elapsedDays(card), card.s);
+    s = fsrsNextS(card.d, card.s, R, g);
+  }
+  return fsrsInterval(s, r);
 }
 function rateCard(id, grade) {
   const card = getCard(id);
-  if (grade === "again") {
-    card.ease = Math.max(1.3, card.ease - 0.2);
+  const g = GRADE_NUM[grade];
+  if (card.state === "new" || card.s == null) {
+    card.s = fsrsS0(g);
+    card.d = fsrsD0(g);
+  } else {
+    const R = fsrsR(elapsedDays(card), card.s);
+    card.s = g === 1 ? fsrsNextSFail(card.d, card.s, R) : fsrsNextS(card.d, card.s, R, g);
+    card.d = fsrsNextD(card.d, g);
+  }
+  card.last = todayStr();
+  if (g === 1) {
     if (card.state === "review") card.lapses++;
     card.state = "learning";
     card.iv = 0;
     card.due = todayStr(); // 同日中に再出題
     return;
   }
-  if (grade === "hard") card.ease = Math.max(1.3, card.ease - 0.15);
-  if (grade === "easy") card.ease = Math.min(3.0, card.ease + 0.15);
-  card.iv = previewIv(card, grade);
+  card.iv = fsrsInterval(card.s, retention());
   card.state = "review";
   card.reps++;
   card.due = todayStr(card.iv);
+}
+// 旧SM-2形式(ease)からの移行
+function migrateCards(s) {
+  for (const c of Object.values(s.cards || {})) {
+    if (c.s === undefined && c.ease !== undefined) {
+      c.s = Math.max(0.4, c.iv || 0.4);
+      c.d = clampNum(11.9 - c.ease * 2.65, 1, 10);
+      c.last = (c.due && c.iv) ? addDaysStr(c.due, -c.iv) : null;
+      delete c.ease;
+    }
+  }
 }
 function fmtIv(days) {
   if (days < 1) return "10分後";
@@ -591,11 +663,33 @@ function renderStats() {
     tr.innerHTML = `<td>${d.slice(5).replace("-", "/")}</td><td>${l.n + l.r}問 ・ 正答率 ${acc}</td>`;
     rt.appendChild(tr);
   });
+
+  // 直近7日の正答率に基づく学習アドバイス
+  let c7 = 0, w7 = 0;
+  for (let i = 0; i < 7; i++) {
+    const l = store.log[todayStr(-i)];
+    if (l) { c7 += l.c; w7 += l.w; }
+  }
+  const hint = document.getElementById("statsHint");
+  const n7 = c7 + w7;
+  if (n7 < 20) {
+    hint.textContent = "";
+  } else {
+    const acc7 = c7 / n7;
+    if (acc7 < 0.7) {
+      hint.textContent = `直近7日の正答率は${Math.round(acc7 * 100)}%です。想起がほとんど失敗する状態では学習効率が落ちるため、1日の新規問題数を減らして復習に集中し、解説をよく読んで（自己説明）から次に進むのがおすすめです。`;
+    } else if (acc7 > 0.95) {
+      hint.textContent = `直近7日の正答率は${Math.round(acc7 * 100)}%と非常に高い状態です。1日の新規問題数を増やす余地があります。`;
+    } else {
+      hint.textContent = `直近7日の正答率は${Math.round(acc7 * 100)}%。適度に間違える（＝忘れる直前に復習できている）状態が最も効率的です。この調子で続けましょう。`;
+    }
+  }
 }
 
 // ---------- UI: 設定 ----------
 function renderSettings() {
   document.getElementById("newPerDaySel").value = String(store.settings.newPerDay);
+  document.getElementById("retentionSel").value = retention().toFixed(2);
   const textCount = store.custom.filter((q) => q.type !== "img").length;
   document.getElementById("customCount").textContent =
     textCount > 0 ? `追加済みの問題：${textCount}問` : "";
@@ -608,6 +702,11 @@ document.getElementById("newPerDaySel").addEventListener("change", (e) => {
   store.settings.newPerDay = parseInt(e.target.value, 10);
   save();
   toast("設定を保存しました");
+});
+document.getElementById("retentionSel").addEventListener("change", (e) => {
+  store.settings.retention = parseFloat(e.target.value);
+  save();
+  toast("目標保持率を変更しました（今後の評価から反映されます）");
 });
 
 // 問題インポート
@@ -974,6 +1073,7 @@ document.getElementById("restoreFile").addEventListener("change", (e) => {
     try {
       const s = JSON.parse(reader.result);
       if (!s.cards || !s.settings) throw new Error("bad");
+      migrateCards(s);
       store = Object.assign(defaultStore(), s);
       save();
       renderHome();

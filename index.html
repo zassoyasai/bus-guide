@@ -217,7 +217,7 @@ body.studying nav { display: none; }
     <div class="card">
       <h2>出題分野</h2>
       <div class="chips" id="catChips"></div>
-      <p class="small" style="margin-top:10px;">忘却曲線に合わせて、間違えた問題ほど早く再出題されます。毎日コツコツ続けるのが最も効率的です。</p>
+      <p class="small" style="margin-top:10px;">答えを見る前に自力で思い出す「想起練習」を、忘れる直前の間隔で繰り返すFSRSアルゴリズムで出題します。分野は混ぜて出題されます（交互学習）。1日分をこなすだけでOKです。</p>
     </div>
   </section>
 
@@ -314,6 +314,7 @@ body.studying nav { display: none; }
     <div class="card">
       <h2>学習記録</h2>
       <table class="mini" id="recordTable"></table>
+      <p class="small" id="statsHint" style="margin-top:10px;"></p>
     </div>
   </section>
 
@@ -329,6 +330,16 @@ body.studying nav { display: none; }
           <option value="30">30問</option>
           <option value="50">50問</option>
           <option value="9999">無制限</option>
+        </select>
+      </div>
+      <div class="set-row">
+        <div>目標保持率<br><span class="small">復習時に覚えていられる確率の目標。高くするほど復習間隔が短くなり、復習量が増えます（90%推奨）</span></div>
+        <select id="retentionSel">
+          <option value="0.97">97%</option>
+          <option value="0.95">95%</option>
+          <option value="0.90">90%（推奨）</option>
+          <option value="0.85">85%</option>
+          <option value="0.80">80%</option>
         </select>
       </div>
     </div>
