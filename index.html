@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0d1117">
+<title>ツーリング相棒</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header id="header">
+  <div class="header-title">
+    <span id="status-dot" class="dot idle"></span>
+    <h1>ツーリング相棒</h1>
+  </div>
+  <div class="header-btns">
+    <button id="btn-memos" class="icon-btn" title="メモ">📝</button>
+    <button id="btn-history" class="icon-btn" title="履歴">🕘</button>
+    <button id="btn-settings" class="icon-btn" title="設定">⚙️</button>
+  </div>
+</header>
+
+<main id="main">
+  <div id="status-text">待機中</div>
+
+  <button id="big-btn" class="big-btn idle" aria-label="会話を開始">
+    <span id="big-btn-icon">🎙️</span>
+    <span id="big-btn-label">タップして開始</span>
+  </button>
+
+  <div id="mode-indicator">
+    <span id="mode-label">常時会話モード</span>
+    <span id="search-label" class="hidden">🔍 Web検索ON</span>
+  </div>
+
+  <div id="transcript">
+    <div id="user-line" class="line user hidden">
+      <div class="line-tag">あなた</div>
+      <div id="user-text" class="line-text"></div>
+    </div>
+    <div id="ai-line" class="line ai hidden">
+      <div class="line-tag">相棒</div>
+      <div id="ai-text" class="line-text"></div>
+    </div>
+  </div>
+
+  <div id="hint">
+    出発前にインカムを接続し、ここをタップしてから走り出してください。<br>
+    「メモして◯◯」で音声メモ、「この辺の道の駅は?」で周辺ガイド。
+  </div>
+</main>
+
+<!-- ===== 設定パネル ===== -->
+<div id="panel-settings" class="panel hidden">
+  <div class="panel-header">
+    <h2>設定</h2>
+    <button class="icon-btn panel-close" data-close="panel-settings">✕</button>
+  </div>
+  <div class="panel-body">
+
+    <section class="setting-group">
+      <h3>Claude API</h3>
+      <label class="setting-row">
+        <span>APIキー</span>
+        <input type="password" id="set-apikey" placeholder="sk-ant-..." autocomplete="off">
+      </label>
+      <p class="note">キーはこの端末内(localStorage)にのみ保存されます。<a href="https://console.anthropic.com/" target="_blank" rel="noopener">Anthropic Console</a>で取得できます。モデル: Claude Haiku 4.5</p>
+    </section>
+
+    <section class="setting-group">
+      <h3>会話モード</h3>
+      <label class="setting-row">
+        <span>起動方法</span>
+        <select id="set-mode">
+          <option value="always">常時会話(話すたびに応答)</option>
+          <option value="wake">ウェイクワードで応答</option>
+        </select>
+      </label>
+      <label class="setting-row" id="row-wakeword">
+        <span>ウェイクワード</span>
+        <input type="text" id="set-wakeword" placeholder="ねえ相棒">
+      </label>
+      <p class="note">インカム仲間との会話を拾わせたくないときはウェイクワードがおすすめです。</p>
+    </section>
+
+    <section class="setting-group">
+      <h3>機能</h3>
+      <label class="setting-row checkbox">
+        <input type="checkbox" id="set-websearch">
+        <span>Web検索を許可(営業時間・天気など最新情報に対応。1,000検索あたり$10)</span>
+      </label>
+      <label class="setting-row checkbox">
+        <input type="checkbox" id="set-geo" checked>
+        <span>GPS位置情報を使う(周辺ガイドに必要)</span>
+      </label>
+    </section>
+
+    <section class="setting-group">
+      <h3>読み上げ</h3>
+      <label class="setting-row">
+        <span>声</span>
+        <select id="set-voice"></select>
+      </label>
+      <label class="setting-row">
+        <span>速さ <output id="rate-out">1.0</output></span>
+        <input type="range" id="set-rate" min="0.6" max="1.6" step="0.1" value="1.0">
+      </label>
+      <button id="btn-test-voice" class="sub-btn">読み上げテスト</button>
+    </section>
+
+    <section class="setting-group">
+      <h3>データ</h3>
+      <button id="btn-new-session" class="sub-btn">新しい会話を始める(文脈をリセット)</button>
+      <button id="btn-clear-all" class="sub-btn danger">全データを削除</button>
+    </section>
+
+    <p class="note safety">⚠️ 安全のため、走行中は絶対に画面を注視・操作しないでください。操作はすべて停車中に行い、走行中は音声のみで利用してください。</p>
+  </div>
+</div>
+
+<!-- ===== メモパネル ===== -->
+<div id="panel-memos" class="panel hidden">
+  <div class="panel-header">
+    <h2>ツーリングメモ</h2>
+    <div>
+      <button id="btn-share-memos" class="icon-btn" title="全メモを共有">📤</button>
+      <button class="icon-btn panel-close" data-close="panel-memos">✕</button>
+    </div>
+  </div>
+  <div class="panel-body">
+    <ul id="memo-list" class="memo-list"></ul>
+    <p id="memo-empty" class="note">まだメモはありません。走行中に「メモして◯◯」と話しかけると保存されます。</p>
+  </div>
+</div>
+
+<!-- ===== 履歴パネル ===== -->
+<div id="panel-history" class="panel hidden">
+  <div class="panel-header">
+    <h2>会話履歴</h2>
+    <div>
+      <button id="btn-share-history" class="icon-btn" title="このセッションを共有">📤</button>
+      <button class="icon-btn panel-close" data-close="panel-history">✕</button>
+    </div>
+  </div>
+  <div class="panel-body">
+    <div id="history-list"></div>
+    <p id="history-empty" class="note">まだ会話がありません。</p>
+  </div>
+</div>
+
+<div id="toast" class="hidden"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
