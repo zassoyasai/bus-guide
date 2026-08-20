@@ -1,0 +1,19 @@
+{
+  "name": "ツーリング相棒",
+  "short_name": "相棒",
+  "description": "バイク+インカム向けハンズフリー音声会話エージェント。雑談・周辺ガイド・音声メモ。",
+  "start_url": ".",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0d1117",
+  "theme_color": "#0d1117",
+  "lang": "ja",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

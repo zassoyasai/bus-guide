@@ -1,19 +1,19 @@
 {
-  "name": "ツーリング相棒",
-  "short_name": "相棒",
-  "description": "バイク+インカム向けハンズフリー音声会話エージェント。雑談・周辺ガイド・音声メモ。",
-  "start_url": ".",
+  "name": "宅建一問一答",
+  "short_name": "宅建一問一答",
+  "description": "忘却曲線に合わせて復習できる宅建士試験の一問一答アプリ",
+  "start_url": "./index.html",
+  "scope": "./",
   "display": "standalone",
-  "orientation": "portrait",
-  "background_color": "#0d1117",
-  "theme_color": "#0d1117",
+  "background_color": "#f4f5fb",
+  "theme_color": "#4338ca",
   "lang": "ja",
   "icons": [
     {
       "src": "icon.svg",
       "sizes": "any",
       "type": "image/svg+xml",
-      "purpose": "any"
+      "purpose": "any maskable"
     }
   ]
 }
