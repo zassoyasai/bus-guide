@@ -188,7 +188,11 @@ async function acquireWakeLock() {
 }
 
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && sessionActive && !wakeLock) acquireWakeLock();
+  if (document.visibilityState === 'visible' && sessionActive) {
+    if (!wakeLock) acquireWakeLock();
+    // 画面OFF中に止まっていた音声認識を再開
+    if (state === 'listening') resumeRecognition();
+  }
 });
 
 // ===================== 読み上げ(TTS) =====================
@@ -430,6 +434,7 @@ function createRecognition() {
 
 function resumeRecognition() {
   if (!recognition || recognitionRunning) return;
+  if (document.hidden) return; // 画面OFF・バックグラウンド中はマイク不可(復帰時に再開される)
   try { recognition.start(); recognitionRunning = true; } catch { /* already started */ }
 }
 
@@ -745,7 +750,49 @@ function stopPack(silent) {
   player.chatInterrupted = false;
   player.packId = null;
   player.idx = -1;
+  if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'none';
   if (!silent) speak('再生を止めました。', { onAllDone: () => finishTurnAfterSpeech() });
+}
+
+// ---- バックグラウンド再生 (Media Session) ----
+// 事前合成済み音声はaudio要素で再生されるため、画面OFFでも継続する。
+// ロック画面・通知・インカム(Bluetooth AVRCP)のボタンで操作できるようにする。
+function updateMediaSession(pack, i) {
+  if (!('mediaSession' in navigator)) return;
+  const t = pack.tracks[i];
+  try {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: `${i + 1}. ${t.title}`,
+      artist: pack.title,
+      album: 'ツーリング相棒',
+      artwork: [{ src: 'icon.svg', sizes: 'any', type: 'image/svg+xml' }],
+    });
+    navigator.mediaSession.playbackState = 'playing';
+  } catch { /* 非対応環境は無視 */ }
+}
+
+function mediaNext() {
+  const p = findPack(player.packId);
+  if (!p) return;
+  if (p.tracks[player.idx]) { p.tracks[player.idx].played = true; savePacks(); }
+  const n = p.tracks.findIndex((t, k) => k > player.idx && !t.played);
+  if (n !== -1) playTrack(p, n, { continuous: player.continuous });
+  else stopPack(true);
+}
+
+function mediaPrev() {
+  const p = findPack(player.packId);
+  if (!p) return;
+  playTrack(p, Math.max(0, player.idx - 1), { continuous: player.continuous });
+}
+
+if ('mediaSession' in navigator) {
+  const set = (name, fn) => { try { navigator.mediaSession.setActionHandler(name, fn); } catch { /* 未対応アクション */ } };
+  set('play', () => { audioEl.play().catch(() => {}); navigator.mediaSession.playbackState = 'playing'; });
+  set('pause', () => { audioEl.pause(); navigator.mediaSession.playbackState = 'paused'; });
+  set('nexttrack', mediaNext);
+  set('previoustrack', mediaPrev);
+  set('stop', () => { stopPack(true); stopSpeaking(); });
 }
 
 function playTrack(pack, i, opts = {}) {
@@ -760,6 +807,7 @@ function playTrack(pack, i, opts = {}) {
   const intro = opts.geo ? `ここで${label}です。${track.title}。` : `${label}、${track.title}。`;
   el.aiText.textContent = `🎧 ${track.title}`;
   el.aiLine.classList.remove('hidden');
+  updateMediaSession(pack, i);
   const speakLive = () => {
     const parts = [intro].concat(splitSentences(track.text));
     parts.forEach((s, k) => {
@@ -787,10 +835,12 @@ function onTrackEnd(packId, i) {
     if (!hasNext) {
       player.continuous = false;
       renderPacks();
-      speak('このパックは最後まで再生しました。', { onAllDone: () => finishTurnAfterSpeech() });
+      if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'none';
+      if (!document.hidden) speak('このパックは最後まで再生しました。', { onAllDone: () => finishTurnAfterSpeech() });
       return;
     }
-    scheduleAuto(4000); // 少し間を置いて次のトラックへ(この間は聞き取りが再開され会話もできる)
+    // 画面ON時は会話できる間を空け、バックグラウンド時は即つなぐ(タイマー制限対策)
+    scheduleAuto(document.hidden ? 400 : 4000);
   }
   renderPacks();
   finishTurnAfterSpeech();
