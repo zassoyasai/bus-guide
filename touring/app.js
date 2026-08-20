@@ -65,6 +65,10 @@ const settings = {
   useGeo: store.get('useGeo', true),
   voiceName: store.get('voiceName', ''),
   rate: store.get('rate', 1.0),
+  ttsEngine: store.get('ttsEngine', 'device'),   // 'device' | 'azure'
+  azureKey: store.get('azureKey', ''),
+  azureRegion: store.get('azureRegion', 'japaneast'),
+  azureVoice: store.get('azureVoice', 'ja-JP-NanamiNeural'),
 };
 
 let memos = store.get('memos', []);           // {id, text, time, lat, lon}
@@ -204,31 +208,174 @@ function sanitizeForSpeech(text) {
     .trim();
 }
 
+function useAzure() {
+  return settings.ttsEngine === 'azure' && !!settings.azureKey;
+}
+
+function speechDone(onAllDone) {
+  pendingUtterances = Math.max(0, pendingUtterances - 1);
+  if (pendingUtterances === 0 && onAllDone) onAllDone();
+}
+
 function speak(text, { onAllDone } = {}) {
   const clean = sanitizeForSpeech(text);
   if (!clean) { if (onAllDone && pendingUtterances === 0) onAllDone(); return; }
+  pendingUtterances++;
+  // 読み上げ中は自分の声を拾わないよう認識を止める
+  pauseRecognition();
+  if (sessionActive && (state === 'thinking' || state === 'listening')) setState('speaking');
+  if (useAzure()) azureEnqueue(clean, onAllDone);
+  else deviceSpeak(clean, onAllDone);
+}
+
+function deviceSpeak(clean, onAllDone) {
   const u = new SpeechSynthesisUtterance(clean);
   u.lang = 'ja-JP';
   const voice = pickVoice();
   if (voice) u.voice = voice;
   u.rate = settings.rate;
-  pendingUtterances++;
-  // 読み上げ中は自分の声を拾わないよう認識を止める
-  pauseRecognition();
-  if (sessionActive && (state === 'thinking' || state === 'listening')) setState('speaking');
-  const done = () => {
-    pendingUtterances = Math.max(0, pendingUtterances - 1);
-    if (pendingUtterances === 0 && onAllDone) onAllDone();
-  };
+  const done = () => speechDone(onAllDone);
   u.onend = done;
   u.onerror = done;
   speechSynthesis.speak(u);
 }
 
+// 端末TTSをPromiseで待つ(Azure失敗時のフォールバック用。カウンタは操作しない)
+function deviceSpeakRaw(clean) {
+  return new Promise((resolve) => {
+    const u = new SpeechSynthesisUtterance(clean);
+    u.lang = 'ja-JP';
+    const voice = pickVoice();
+    if (voice) u.voice = voice;
+    u.rate = settings.rate;
+    u.onend = resolve;
+    u.onerror = resolve;
+    speechSynthesis.speak(u);
+  });
+}
+
 function stopSpeaking() {
   pendingUtterances = 0;
+  azureGen++;
+  azureQueue = [];
+  try { audioEl.pause(); audioEl.removeAttribute('src'); } catch { /* noop */ }
   speechSynthesis.cancel();
 }
+
+// ---- Microsoft Azure 音声合成 ----
+const audioEl = new Audio();
+let azureQueue = [];
+let azureBusy = false;
+let azureGen = 0; // 停止するたびに増やし、進行中の再生ループを無効化する
+
+function escapeXml(s) {
+  return s.replace(/[<>&'"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' }[c]));
+}
+
+async function azureSynth(text) {
+  const pct = Math.round((settings.rate - 1) * 100);
+  const ssml = `<speak version="1.0" xml:lang="ja-JP"><voice name="${settings.azureVoice}"><prosody rate="${pct >= 0 ? '+' : ''}${pct}%">${escapeXml(text)}</prosody></voice></speak>`;
+  const res = await fetch(`https://${settings.azureRegion}.tts.speech.microsoft.com/cognitiveservices/v1`, {
+    method: 'POST',
+    headers: {
+      'Ocp-Apim-Subscription-Key': settings.azureKey,
+      'Content-Type': 'application/ssml+xml',
+      'X-Microsoft-OutputFormat': 'audio-24khz-48kbitrate-mono-mp3',
+    },
+    body: ssml,
+  });
+  if (!res.ok) throw new Error('Azure TTS HTTP ' + res.status);
+  return await res.blob();
+}
+
+function playBlobOnce(blob) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(blob);
+    const cleanup = () => { URL.revokeObjectURL(url); resolve(); };
+    audioEl.src = url;
+    audioEl.onended = cleanup;
+    audioEl.onerror = cleanup;
+    audioEl.play().catch(cleanup);
+  });
+}
+
+function azureEnqueue(text, onAllDone) {
+  azureQueue.push({ text, onAllDone, blobPromise: null });
+  azureLoop();
+}
+
+async function azureLoop() {
+  if (azureBusy) return;
+  azureBusy = true;
+  const gen = azureGen;
+  try {
+    while (azureQueue.length > 0 && gen === azureGen) {
+      const item = azureQueue.shift();
+      // 次の文を先読み合成してつなぎ目の待ちを減らす
+      if (azureQueue[0] && !azureQueue[0].blobPromise) {
+        const next = azureQueue[0];
+        next.blobPromise = azureSynth(next.text).catch(() => null);
+      }
+      let blob = null;
+      try { blob = await (item.blobPromise || azureSynth(item.text)); } catch { blob = null; }
+      if (gen !== azureGen) break; // 停止済み
+      if (blob) await playBlobOnce(blob);
+      else await deviceSpeakRaw(item.text); // 圏外・エラー時は端末TTSにフォールバック
+      if (gen !== azureGen) break;
+      speechDone(item.onAllDone);
+    }
+  } finally {
+    azureBusy = false;
+    if (azureQueue.length > 0 && gen === azureGen) azureLoop();
+  }
+}
+
+// 収録トラックの合成済み音声1本をそのまま再生する
+async function speakCachedBlob(blob, onAllDone) {
+  pendingUtterances++;
+  pauseRecognition();
+  if (sessionActive && (state === 'thinking' || state === 'listening')) setState('speaking');
+  const gen = azureGen;
+  await playBlobOnce(blob);
+  if (gen === azureGen) speechDone(onAllDone);
+}
+
+// ---- 合成済み音声の保存 (IndexedDB) ----
+let adbPromise = null;
+function adbOpen() {
+  if (adbPromise) return adbPromise;
+  adbPromise = new Promise((res, rej) => {
+    const r = indexedDB.open('touring_audio', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('a');
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+  return adbPromise;
+}
+function adbPut(key, val) {
+  return adbOpen().then((db) => new Promise((res, rej) => {
+    const tx = db.transaction('a', 'readwrite');
+    tx.objectStore('a').put(val, key);
+    tx.oncomplete = res;
+    tx.onerror = () => rej(tx.error);
+  }));
+}
+function adbGet(key) {
+  return adbOpen().then((db) => new Promise((res, rej) => {
+    const rq = db.transaction('a').objectStore('a').get(key);
+    rq.onsuccess = () => res(rq.result || null);
+    rq.onerror = () => rej(rq.error);
+  }));
+}
+function adbDel(key) {
+  return adbOpen().then((db) => new Promise((res, rej) => {
+    const tx = db.transaction('a', 'readwrite');
+    tx.objectStore('a').delete(key);
+    tx.oncomplete = res;
+    tx.onerror = () => rej(tx.error);
+  }));
+}
+function audioKey(packId, idx) { return `${packId}|${idx}`; }
 
 // 文単位に区切って逐次読み上げるためのチャンカー
 function createSentenceChunker(onSentence) {
@@ -611,12 +758,24 @@ function playTrack(pack, i, opts = {}) {
   player.chatInterrupted = false;
   const label = pack.type === 'guide' ? 'ガイド' : 'ラジオ';
   const intro = opts.geo ? `ここで${label}です。${track.title}。` : `${label}、${track.title}。`;
-  const parts = [intro].concat(splitSentences(track.text));
   el.aiText.textContent = `🎧 ${track.title}`;
   el.aiLine.classList.remove('hidden');
-  parts.forEach((s, k) => {
-    speak(s, k === parts.length - 1 ? { onAllDone: () => onTrackEnd(pack.id, i) } : undefined);
-  });
+  const speakLive = () => {
+    const parts = [intro].concat(splitSentences(track.text));
+    parts.forEach((s, k) => {
+      speak(s, k === parts.length - 1 ? { onAllDone: () => onTrackEnd(pack.id, i) } : undefined);
+    });
+  };
+  if (useAzure()) {
+    // 事前合成した音声があればオフラインでもそのまま再生
+    adbGet(audioKey(pack.id, i)).then((blob) => {
+      if (player.packId !== pack.id || player.idx !== i) return; // 待ち時間中に別再生が始まった
+      if (blob) speakCachedBlob(blob, () => onTrackEnd(pack.id, i));
+      else speakLive();
+    }).catch(speakLive);
+  } else {
+    speakLive();
+  }
   renderPacks();
 }
 
@@ -904,6 +1063,30 @@ async function generatePack() {
   }
 }
 
+// パック全トラックをAzureで事前合成して端末に保存(オフライン再生用)
+async function renderPackAudio(pack, btn) {
+  if (!useAzure()) { showToast('設定でMicrosoft Azure音声を有効にしてください'); return; }
+  btn.disabled = true;
+  const label = pack.type === 'guide' ? 'ガイド' : 'ラジオ';
+  try {
+    for (let i = 0; i < pack.tracks.length; i++) {
+      btn.textContent = `音声作成中… ${i + 1}/${pack.tracks.length}`;
+      const t = pack.tracks[i];
+      const blob = await azureSynth(sanitizeForSpeech(`${label}、${t.title}。${t.text}`));
+      await adbPut(audioKey(pack.id, i), blob);
+    }
+    pack.audioReady = true;
+    savePacks();
+    showToast('音声を保存しました。オフラインでも再生できます');
+  } catch (err) {
+    console.error(err);
+    showToast('音声作成に失敗しました: ' + err.message, 4000);
+  } finally {
+    btn.disabled = false;
+    renderPacks();
+  }
+}
+
 // ---- パック一覧UI ----
 function renderPacks() {
   const wrap = $('pack-list');
@@ -972,11 +1155,19 @@ function renderPacks() {
     delBtn.onclick = () => {
       if (!confirm(`「${pack.title}」を削除しますか?`)) return;
       if (player.packId === pack.id) stopPack(true);
+      pack.tracks.forEach((_, i) => adbDel(audioKey(pack.id, i)).catch(() => {}));
       packs = packs.filter((p) => p.id !== pack.id);
       savePacks();
       renderPacks();
     };
     actions.append(resetBtn, delBtn);
+    if (useAzure()) {
+      const audioBtn = document.createElement('button');
+      audioBtn.className = 'sub-btn';
+      audioBtn.textContent = pack.audioReady ? '🔊 音声を更新' : '🔊 音声を作成';
+      audioBtn.onclick = () => renderPackAudio(pack, audioBtn);
+      actions.appendChild(audioBtn);
+    }
     body.appendChild(actions);
     det.appendChild(body);
     wrap.appendChild(det);
@@ -1187,6 +1378,27 @@ function initSettingsUI() {
     store.set('rate', settings.rate);
     $('rate-out').textContent = settings.rate.toFixed(1);
   });
+
+  // 音声エンジン(端末標準 / Microsoft Azure)
+  const refreshTtsRows = () => {
+    const az = $('set-tts-engine').value === 'azure';
+    $('azure-rows').classList.toggle('hidden', !az);
+    $('row-device-voice').style.display = az ? 'none' : '';
+  };
+  $('set-tts-engine').value = settings.ttsEngine;
+  $('set-azure-key').value = settings.azureKey;
+  $('set-azure-region').value = settings.azureRegion;
+  $('set-azure-voice').value = settings.azureVoice;
+  refreshTtsRows();
+  $('set-tts-engine').addEventListener('change', (e) => {
+    settings.ttsEngine = e.target.value;
+    store.set('ttsEngine', settings.ttsEngine);
+    refreshTtsRows();
+    renderPacks(); // 「音声を作成」ボタンの表示を更新
+  });
+  $('set-azure-key').addEventListener('change', (e) => { settings.azureKey = e.target.value.trim(); store.set('azureKey', settings.azureKey); renderPacks(); });
+  $('set-azure-region').addEventListener('change', (e) => { settings.azureRegion = e.target.value; store.set('azureRegion', settings.azureRegion); });
+  $('set-azure-voice').addEventListener('change', (e) => { settings.azureVoice = e.target.value; store.set('azureVoice', settings.azureVoice); });
 
   const voiceSelect = $('set-voice');
   function populateVoices() {

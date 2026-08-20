@@ -104,9 +104,48 @@
     <section class="setting-group">
       <h3>読み上げ</h3>
       <label class="setting-row">
+        <span>音声エンジン</span>
+        <select id="set-tts-engine">
+          <option value="device">端末標準(Google / Samsung)</option>
+          <option value="azure">Microsoft Azure 音声(高品質・要APIキー)</option>
+        </select>
+      </label>
+      <label class="setting-row" id="row-device-voice">
         <span>声</span>
         <select id="set-voice"></select>
       </label>
+      <div id="azure-rows" class="hidden">
+        <label class="setting-row">
+          <span>Azure Speech APIキー</span>
+          <input type="password" id="set-azure-key" placeholder="Azureポータルで取得したキー" autocomplete="off">
+        </label>
+        <label class="setting-row">
+          <span>リージョン</span>
+          <select id="set-azure-region">
+            <option value="japaneast">Japan East(東日本)</option>
+            <option value="japanwest">Japan West(西日本)</option>
+            <option value="eastasia">East Asia(香港)</option>
+            <option value="southeastasia">Southeast Asia(シンガポール)</option>
+            <option value="eastus">East US</option>
+            <option value="westus2">West US 2</option>
+          </select>
+        </label>
+        <label class="setting-row">
+          <span>声</span>
+          <select id="set-azure-voice">
+            <option value="ja-JP-NanamiNeural">Nanami(女性・自然で明るい)</option>
+            <option value="ja-JP-KeitaNeural">Keita(男性・落ち着き)</option>
+            <option value="ja-JP-MayuNeural">Mayu(女性・やわらか)</option>
+            <option value="ja-JP-DaichiNeural">Daichi(男性・はきはき)</option>
+            <option value="ja-JP-AoiNeural">Aoi(女性・元気)</option>
+            <option value="ja-JP-NaokiNeural">Naoki(男性)</option>
+            <option value="ja-JP-ShioriNeural">Shiori(女性)</option>
+          </select>
+        </label>
+        <p class="note">
+          <a href="https://portal.azure.com/" target="_blank" rel="noopener">Azureポータル</a>で「音声サービス」リソースを作成し、「キーとエンドポイント」のキー1とリージョンを入力してください。無料プラン(F0)で月50万文字まで無料。会話の読み上げにはネット接続が必要ですが、収録パックは🎧画面の「音声を作成」で事前保存すればオフライン再生できます。圏外時は自動で端末標準の声に切り替わります。
+        </p>
+      </div>
       <label class="setting-row">
         <span>速さ <output id="rate-out">1.0</output></span>
         <input type="range" id="set-rate" min="0.6" max="1.6" step="0.1" value="1.0">
