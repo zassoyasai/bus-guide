@@ -22,6 +22,7 @@ const SYSTEM_PROMPT = `あなたは「相棒」という名前の、バイクツ
 - 雑談相手: 眠気防止の話し相手。話題を振ったりクイズを出したりしてもよい。
 - 周辺ガイド: 発話に付く現在地情報(緯度経度・進行方向・速度)をもとに、周辺の観光スポット、道の駅、グルメ、休憩場所などを案内する。位置情報から地名を推測して自然に話す。緯度経度の数値は読み上げない。
 - メモ: 「メモして」「覚えておいて」などと頼まれたら save_memo ツールで保存し、保存したことを一言で伝える。
+- 収録済みのガイド・ラジオの再生操作はアプリ本体が音声コマンドで処理する。再生を頼まれたら「ガイド再生、またはラジオ流して、と言ってみてください」と短く案内する。
 
 情報が古い可能性がある場合(営業時間・天気など)は、その旨を一言添える。`;
 
@@ -38,6 +39,11 @@ const SAVE_MEMO_TOOL = {
 };
 
 const WEB_SEARCH_TOOL = { type: 'web_search_20250305', name: 'web_search', max_uses: 3 };
+
+// パック生成(事前収録)用: 品質重視でOpus 5を使用
+const MODEL_GEN = 'claude-opus-5';
+const GEN_WEB_SEARCH_TOOL = { type: 'web_search_20260209', name: 'web_search', max_uses: 4 };
+const GEN_SYSTEM = `あなたは日本のツーリング向け音声コンテンツ(バスガイド風ツアーガイド・ラジオ番組)の敏腕構成作家です。歴史・地理・地形・グルメ・雑学に精通し、聞いていて楽しく、ためになる語りを書きます。出力は必ず指示されたJSONのみを返し、それ以外の文章は一切書きません。`;
 
 // ===================== 設定・保存 =====================
 const store = {
@@ -62,6 +68,7 @@ const settings = {
 };
 
 let memos = store.get('memos', []);           // {id, text, time, lat, lon}
+let packs = store.get('packs', []);           // {id, type:'guide'|'radio', title, dest, memo, geoEnabled, createdAt, tracks:[{title,text,lat,lon,radius,played}]}
 let sessions = store.get('sessions', []);     // {id, startedAt, updatedAt, turns:[{who,'user'|'ai', text, time}]}
 let apiMessages = store.get('apiMessages', []); // Claude APIに渡す生のメッセージ配列(現在セッション)
 
@@ -76,6 +83,14 @@ let wakeLock = null;
 let geoWatchId = null;
 let geo = null;                 // {lat, lon, heading, speed, accuracy, time}
 let currentSession = null;
+let generating = false;         // パック生成中フラグ
+const player = {                // ガイド・ラジオ再生の状態
+  packId: null,
+  idx: -1,
+  continuous: false,            // トラック終了後に自動で次へ進むか
+  chatInterrupted: false,       // 会話割り込み後に再生を再開するか
+  autoTimer: null,
+};
 
 // ===================== DOM =====================
 const $ = (id) => document.getElementById(id);
@@ -133,6 +148,7 @@ function startGeo() {
         heading: pos.coords.heading, speed: pos.coords.speed,
         accuracy: pos.coords.accuracy, time: Date.now(),
       };
+      maybeGeoTrigger();
     },
     () => { /* 拒否・失敗時は位置情報なしで続行 */ },
     { enableHighAccuracy: true, maximumAge: 15000, timeout: 20000 }
@@ -301,6 +317,17 @@ function matchWakeWord(text) {
 function handleUtterance(text) {
   if (!sessionActive || state !== 'listening') return;
   if (!text || text.length < 2) return; // ノイズ除去
+
+  // ガイド・ラジオの音声コマンドはウェイクワード不要で最優先処理
+  // (停止・次・続きなどは再生コンテキストがあるときだけコマンド扱いにする)
+  const cmd = matchCommand(normalizeKana(text));
+  if (cmd && (cmd === 'guide' || cmd === 'radio' || player.packId)) { runCommand(cmd); return; }
+
+  // 連続再生の合間に会話が始まったら、自動進行を止めて会話後に再開する
+  if (player.autoTimer) {
+    clearAuto();
+    if (player.continuous) player.chatInterrupted = true;
+  }
 
   let content = text;
   if (settings.mode === 'wake') {
@@ -540,6 +567,420 @@ function finishTurnAfterSpeech() {
   if (abortController) { setState('thinking'); return; } // まだ応答取得中(ツール実行・検索の続きなど)
   setState('listening');
   resumeRecognition();
+  // 会話で中断していた連続再生を少し置いて再開
+  if (player.chatInterrupted && player.packId && player.continuous) {
+    player.chatInterrupted = false;
+    scheduleAuto(6000);
+  }
+}
+
+// ===================== ガイド・ラジオ再生 =====================
+function savePacks() { store.set('packs', packs); }
+function findPack(id) { return packs.find((p) => p.id === id); }
+function latestPack(type) {
+  for (let i = packs.length - 1; i >= 0; i--) {
+    if (packs[i].type === type && packs[i].tracks.length > 0) return packs[i];
+  }
+  return null;
+}
+
+function splitSentences(text) {
+  return (text.match(/[^。!?!?\n]+[。!?!?\n]?/g) || [text]).map((s) => s.trim()).filter(Boolean);
+}
+
+function clearAuto() {
+  if (player.autoTimer) { clearTimeout(player.autoTimer); player.autoTimer = null; }
+}
+
+function stopPack(silent) {
+  clearAuto();
+  player.continuous = false;
+  player.chatInterrupted = false;
+  player.packId = null;
+  player.idx = -1;
+  if (!silent) speak('再生を止めました。', { onAllDone: () => finishTurnAfterSpeech() });
+}
+
+function playTrack(pack, i, opts = {}) {
+  const track = pack.tracks[i];
+  if (!track) return;
+  clearAuto();
+  player.packId = pack.id;
+  player.idx = i;
+  player.continuous = opts.continuous !== false;
+  player.chatInterrupted = false;
+  const label = pack.type === 'guide' ? 'ガイド' : 'ラジオ';
+  const intro = opts.geo ? `ここで${label}です。${track.title}。` : `${label}、${track.title}。`;
+  const parts = [intro].concat(splitSentences(track.text));
+  el.aiText.textContent = `🎧 ${track.title}`;
+  el.aiLine.classList.remove('hidden');
+  parts.forEach((s, k) => {
+    speak(s, k === parts.length - 1 ? { onAllDone: () => onTrackEnd(pack.id, i) } : undefined);
+  });
+  renderPacks();
+}
+
+function onTrackEnd(packId, i) {
+  const pack = findPack(packId);
+  if (pack && pack.tracks[i]) { pack.tracks[i].played = true; savePacks(); }
+  if (pack && player.continuous && player.packId === packId) {
+    const hasNext = pack.tracks.some((t, k) => k > i && !t.played);
+    if (!hasNext) {
+      player.continuous = false;
+      renderPacks();
+      speak('このパックは最後まで再生しました。', { onAllDone: () => finishTurnAfterSpeech() });
+      return;
+    }
+    scheduleAuto(4000); // 少し間を置いて次のトラックへ(この間は聞き取りが再開され会話もできる)
+  }
+  renderPacks();
+  finishTurnAfterSpeech();
+}
+
+function scheduleAuto(ms) {
+  clearAuto();
+  player.autoTimer = setTimeout(() => {
+    player.autoTimer = null;
+    const pack = findPack(player.packId);
+    if (!pack || !player.continuous) return;
+    // 会話や応答の最中なら少し待って再試行
+    if (state === 'thinking' || pendingUtterances > 0 || abortController) { scheduleAuto(3000); return; }
+    const next = pack.tracks.findIndex((t, k) => k > player.idx && !t.played);
+    if (next !== -1) playTrack(pack, next, { continuous: true });
+  }, ms);
+}
+
+function startPack(pack) {
+  if (!pack || pack.tracks.length === 0) return;
+  if (pack.tracks.every((t) => t.played)) pack.tracks.forEach((t) => { t.played = false; }); // 全部聴き終えていたら最初から
+  const first = pack.tracks.findIndex((t) => !t.played);
+  playTrack(pack, first === -1 ? 0 : first, { continuous: true });
+}
+
+// GPSでスポットに近づいたら該当トラックを自動再生
+function distanceKm(lat1, lon1, lat2, lon2) {
+  const R = 6371, rad = Math.PI / 180;
+  const dLat = (lat2 - lat1) * rad, dLon = (lon2 - lon1) * rad;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+function maybeGeoTrigger() {
+  if (!sessionActive || state !== 'listening' || pendingUtterances > 0 || abortController || !geo) return;
+  for (const pack of packs) {
+    if (pack.type !== 'guide' || !pack.geoEnabled) continue;
+    for (let i = 0; i < pack.tracks.length; i++) {
+      const t = pack.tracks[i];
+      if (t.played || t.lat == null || t.lon == null) continue;
+      if (distanceKm(geo.lat, geo.lon, t.lat, t.lon) <= (t.radius || 3)) {
+        playTrack(pack, i, { continuous: false, geo: true });
+        return;
+      }
+    }
+  }
+}
+
+// ---- 音声コマンド(ウェイクワード不要) ----
+function matchCommand(n) {
+  if (!n || n.length > 16) return null;
+  const play = /(再生|さいせい|流して|ながして|かけて|つけて|すたーと|開始|聞かせて|きかせて|お願い|おねがい)/;
+  const stop = /(止めて|とめて|停止|ていし|すとっぷ|やめて|終了|おふ)/;
+  if (/がいど/.test(n) && stop.test(n)) return 'stop';
+  if (/らじお/.test(n) && stop.test(n)) return 'stop';
+  if (/がいど/.test(n) && (play.test(n) || n === 'がいど')) return 'guide';
+  if (/らじお/.test(n) && (play.test(n) || n === 'らじお')) return 'radio';
+  if (/^(つぎ|次)(へ|で|の(とらっく|曲|きょく|話|はなし))?(お願い|おねがい)?$/.test(n) || n === 'すきっぷ') return 'next';
+  if (/^(つづき|続き|さいかい|再開)(から|を|お願い|おねがい)?(再生|さいせい)?$/.test(n)) return 'resume';
+  if (/^(すとっぷ|停止|ていし|止めて|とめて|やめて|それ止めて|もう止めて|再生止めて)$/.test(n)) return 'stop';
+  if (/^(もう一度|もういちど|もう一回|もういっかい|もっかい)(お願い|おねがい)?$/.test(n)) return 'repeat';
+  return null;
+}
+
+function speakNotice(msg) {
+  speak(msg, { onAllDone: () => finishTurnAfterSpeech() });
+}
+
+function runCommand(cmd) {
+  const pack = player.packId ? findPack(player.packId) : null;
+  switch (cmd) {
+    case 'guide': {
+      const p = latestPack('guide');
+      if (!p) { speakNotice('ガイドパックがまだありません。アプリのガイド画面で生成してください。'); return; }
+      startPack(p);
+      return;
+    }
+    case 'radio': {
+      const p = latestPack('radio');
+      if (!p) { speakNotice('ラジオパックがまだありません。アプリのガイド画面で生成してください。'); return; }
+      startPack(p);
+      return;
+    }
+    case 'next': {
+      const p = pack || latestPack('guide') || latestPack('radio');
+      if (!p) { speakNotice('再生できるパックがありません。'); return; }
+      const from = p.id === player.packId ? player.idx : -1;
+      const next = p.tracks.findIndex((t, k) => k > from && !t.played);
+      if (next === -1) { speakNotice('最後のトラックです。'); return; }
+      playTrack(p, next, { continuous: true });
+      return;
+    }
+    case 'resume': {
+      const p = pack;
+      if (!p) { speakNotice('再生中のパックがありません。ガイド再生、と言ってください。'); return; }
+      const cur = p.tracks[player.idx];
+      const idx = cur && !cur.played ? player.idx : p.tracks.findIndex((t, k) => k > player.idx && !t.played);
+      if (idx === -1) { speakNotice('このパックは最後まで再生済みです。'); return; }
+      playTrack(p, idx, { continuous: true });
+      return;
+    }
+    case 'repeat': {
+      if (!pack || player.idx < 0) { speakNotice('再生中のトラックがありません。'); return; }
+      playTrack(pack, player.idx, { continuous: player.continuous });
+      return;
+    }
+    case 'stop':
+      stopPack(false);
+      return;
+  }
+}
+
+// ---- パック生成(Claude Opus 5) ----
+async function genApiRequest(userText, useSearch, onStatus) {
+  const messages = [{ role: 'user', content: [{ type: 'text', text: userText }] }];
+  for (let hop = 0; hop < 6; hop++) {
+    const res = await fetch(API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': settings.apiKey,
+        'anthropic-version': API_VERSION,
+        'anthropic-beta': 'server-side-fallback-2026-07-01',
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
+      body: JSON.stringify({
+        model: MODEL_GEN,
+        max_tokens: 16000,
+        fallbacks: 'default',
+        system: GEN_SYSTEM,
+        tools: useSearch ? [GEN_WEB_SEARCH_TOOL] : [],
+        messages,
+      }),
+    });
+    if (!res.ok) {
+      let detail = '';
+      try { detail = (await res.json()).error?.message || ''; } catch { /* noop */ }
+      throw new Error(res.status === 401 ? 'APIキーが正しくありません' : (detail || `HTTP ${res.status}`));
+    }
+    const data = await res.json();
+    if (data.stop_reason === 'pause_turn') {
+      messages.push({ role: 'assistant', content: data.content });
+      if (onStatus) onStatus('Web検索中…');
+      continue;
+    }
+    if (data.stop_reason === 'refusal') throw new Error('生成が拒否されました。内容を変えて再試行してください');
+    return data.content.filter((b) => b.type === 'text').map((b) => b.text).join('');
+  }
+  throw new Error('生成が完了しませんでした');
+}
+
+function extractJson(text) {
+  const s = text.indexOf('['), e = text.lastIndexOf(']');
+  if (s === -1 || e <= s) throw new Error('生成結果の解析に失敗しました');
+  return JSON.parse(text.slice(s, e + 1));
+}
+
+function guideOutlinePrompt(title, memo, count) {
+  return `「${title}」へのツーリング向け音声ガイド(バスガイド風)を作ります。
+ライダーのメモ: ${memo || '特になし'}
+
+まず全${count}トラックの構成案を作ってください。
+条件:
+- 主要なアプローチ路、道中と現地の見どころ、歴史、地理・地形、グルメ、雑学をバランスよく
+- 場所に強く紐づくトラックには、その場所の中心の緯度(lat)・経度(lon)と再生トリガー半径radius_km(2〜8)を入れる。位置に自信がない場合はnullにする
+- 導入・総論・まとめなど場所に紐づかないトラックはlat/lon/radius_kmをnull
+- おおよそのルート順(アプローチ→現地→まとめ)に並べる
+出力は次の形のJSON配列のみ:
+[{"title":"トラック名","summary":"内容の要点1文","lat":33.5,"lon":132.9,"radius_km":4}]`;
+}
+
+function radioOutlinePrompt(title, memo, count) {
+  return `ツーリング中にどこでも聴ける音声ラジオ番組「${title}」を作ります。
+リスナーの要望メモ: ${memo || '特になし'}
+
+まず全${count}回分のエピソード構成案を作ってください。
+条件:
+- バイク・道路・地理・歴史・雑学など、走りながら聴いて楽しい話題
+- 1エピソード1テーマで、雑学として満足度が高い切り口にする
+- lat/lon/radius_kmはすべてnull
+出力は次の形のJSON配列のみ:
+[{"title":"エピソード名","summary":"内容の要点1文","lat":null,"lon":null,"radius_km":null}]`;
+}
+
+function batchPrompt(type, title, memo, outline, batch) {
+  return `「${title}」向け音声${type === 'guide' ? 'ガイド' : 'ラジオ番組'}の本文を執筆します。
+リスナーはバイクで走行中のライダーで、本文はそのまま音声読み上げされます。
+リスナーのメモ: ${memo || '特になし'}
+全体の構成: ${JSON.stringify(outline.map((o) => o.title))}
+
+今回執筆するトラック: ${JSON.stringify(batch.map((o) => ({ title: o.title, summary: o.summary })))}
+
+条件:
+- 各トラック300〜500文字。話し言葉の日本語、です・ます調で、バスガイドやラジオDJのような聞いて楽しい語り口
+- 記号・箇条書き・URL・絵文字は使わない。数字は漢数字など耳で聞いて分かる表現にする
+- 変わりやすい情報(営業時間・料金など)は断定せず、変わりやすいので確認を、と一言添える
+- 運転中でも安全に聞ける内容にし、必要な安全上の注意は自然に織り込む
+出力は今回のトラックと同数・同順のJSON配列のみ:
+[{"title":"トラック名","text":"本文"}]`;
+}
+
+async function generatePack() {
+  if (generating) return;
+  if (!settings.apiKey) {
+    showToast('先に設定画面でClaude APIキーを入力してください', 4000);
+    openPanel('panel-settings');
+    return;
+  }
+  const type = $('gen-type').value;
+  const title = $('gen-title').value.trim();
+  const memo = $('gen-memo').value.trim();
+  const count = Number($('gen-count').value);
+  const useSearch = $('gen-search').checked;
+  const geoOn = type === 'guide' && $('gen-geo').checked;
+  if (!title) { showToast(type === 'guide' ? '目的地を入力してください' : 'テーマを入力してください'); return; }
+
+  generating = true;
+  const prog = $('gen-progress');
+  const btn = $('btn-generate');
+  prog.classList.remove('hidden');
+  btn.disabled = true;
+  try {
+    prog.textContent = '構成(トラック一覧)を作成中…';
+    const outlineText = await genApiRequest(
+      type === 'guide' ? guideOutlinePrompt(title, memo, count) : radioOutlinePrompt(title, memo, count),
+      useSearch, (s) => { prog.textContent = `構成を作成中… ${s}`; });
+    const outline = extractJson(outlineText).slice(0, count).filter((o) => o && o.title);
+    if (outline.length === 0) throw new Error('構成の生成に失敗しました');
+
+    const tracks = [];
+    for (let i = 0; i < outline.length; i += 5) {
+      const batch = outline.slice(i, i + 5);
+      prog.textContent = `本文を執筆中… ${i + 1}〜${Math.min(i + 5, outline.length)} / ${outline.length}トラック`;
+      const items = extractJson(await genApiRequest(batchPrompt(type, title, memo, outline, batch), useSearch));
+      batch.forEach((o, k) => {
+        const it = items[k] || {};
+        const text = String(it.text || '').trim();
+        if (!text) return;
+        tracks.push({
+          title: o.title,
+          text,
+          lat: geoOn && o.lat != null ? Number(o.lat) : null,
+          lon: geoOn && o.lon != null ? Number(o.lon) : null,
+          radius: geoOn && o.radius_km != null ? Number(o.radius_km) : null,
+          played: false,
+        });
+      });
+    }
+    if (tracks.length < Math.max(2, outline.length / 2)) throw new Error('生成結果が不完全でした。もう一度お試しください');
+
+    packs.push({
+      id: 'P' + Date.now(),
+      type, dest: title, memo,
+      title: type === 'guide' ? `${title} ツアーガイド` : title,
+      geoEnabled: geoOn,
+      createdAt: Date.now(),
+      tracks,
+    });
+    savePacks();
+    renderPacks();
+    prog.textContent = `完成! ${tracks.length}トラックを保存しました。走行中は「${type === 'guide' ? 'ガイド再生' : 'ラジオ流して'}」で再生できます。`;
+    $('gen-title').value = '';
+    $('gen-memo').value = '';
+  } catch (err) {
+    console.error(err);
+    prog.textContent = 'エラー: ' + err.message;
+  } finally {
+    generating = false;
+    btn.disabled = false;
+  }
+}
+
+// ---- パック一覧UI ----
+function renderPacks() {
+  const wrap = $('pack-list');
+  if (!wrap) return;
+  const openIds = new Set([...wrap.querySelectorAll('details[open]')].map((d) => d.dataset.id));
+  wrap.innerHTML = '';
+  for (const pack of [...packs].reverse()) {
+    const det = document.createElement('details');
+    det.className = 'pack-item';
+    det.dataset.type = pack.type;
+    det.dataset.id = pack.id;
+    if (openIds.has(pack.id)) det.open = true;
+
+    const sum = document.createElement('summary');
+    const badge = document.createElement('span');
+    badge.className = 'pack-badge ' + pack.type;
+    badge.textContent = pack.type === 'guide' ? 'ガイド' : 'ラジオ';
+    const titleWrap = document.createElement('div');
+    titleWrap.className = 'pack-title-wrap';
+    const played = pack.tracks.filter((t) => t.played).length;
+    titleWrap.innerHTML = '';
+    const t1 = document.createElement('div');
+    t1.className = 'pack-title';
+    t1.textContent = pack.title;
+    const t2 = document.createElement('div');
+    t2.className = 'pack-sub';
+    t2.textContent = `${pack.tracks.length}トラック / 再生済み ${played}` + (pack.geoEnabled ? ' / 📍位置連動' : '');
+    titleWrap.append(t1, t2);
+    const playBtn = document.createElement('button');
+    playBtn.className = 'pack-play-btn';
+    playBtn.textContent = '▶ 再生';
+    playBtn.onclick = (e) => { e.preventDefault(); e.stopPropagation(); startPack(pack); showToast('再生を開始しました'); };
+    sum.append(badge, titleWrap, playBtn);
+    det.appendChild(sum);
+
+    const body = document.createElement('div');
+    body.className = 'pack-tracks';
+    pack.tracks.forEach((t, i) => {
+      const row = document.createElement('div');
+      row.className = 'pack-track';
+      const st = document.createElement('span');
+      st.className = 't-status';
+      st.textContent = player.packId === pack.id && player.idx === i ? '🔊' : (t.played ? '✓' : '・');
+      const tt = document.createElement('span');
+      tt.className = 't-title' + (t.played ? ' played' : '');
+      tt.textContent = `${i + 1}. ${t.title}`;
+      const gg = document.createElement('span');
+      gg.className = 't-geo';
+      gg.textContent = t.lat != null ? '📍' : '';
+      const pb = document.createElement('button');
+      pb.className = 'icon-btn';
+      pb.textContent = '▶';
+      pb.onclick = () => playTrack(pack, i, { continuous: true });
+      row.append(st, tt, gg, pb);
+      body.appendChild(row);
+    });
+    const actions = document.createElement('div');
+    actions.className = 'pack-actions';
+    const resetBtn = document.createElement('button');
+    resetBtn.className = 'sub-btn';
+    resetBtn.textContent = '再生済みをリセット';
+    resetBtn.onclick = () => { pack.tracks.forEach((t) => { t.played = false; }); savePacks(); renderPacks(); };
+    const delBtn = document.createElement('button');
+    delBtn.className = 'sub-btn danger';
+    delBtn.textContent = '削除';
+    delBtn.onclick = () => {
+      if (!confirm(`「${pack.title}」を削除しますか?`)) return;
+      if (player.packId === pack.id) stopPack(true);
+      packs = packs.filter((p) => p.id !== pack.id);
+      savePacks();
+      renderPacks();
+    };
+    actions.append(resetBtn, delBtn);
+    body.appendChild(actions);
+    det.appendChild(body);
+    wrap.appendChild(det);
+  }
 }
 
 // ===================== メモ =====================
@@ -672,6 +1113,7 @@ async function startSession() {
 function endSession() {
   sessionActive = false;
   if (abortController) abortController.abort();
+  stopPack(true);
   stopSpeaking();
   pauseRecognition();
   stopGeo();
@@ -685,6 +1127,7 @@ el.bigBtn.addEventListener('click', () => {
     startSession();
   } else if (state === 'thinking' || state === 'speaking') {
     if (abortController) abortController.abort();
+    stopPack(true); // 再生中のガイド・ラジオの続行も止める
     stopSpeaking();
     finishTurnAfterSpeech();
     showToast('応答を止めました');
@@ -703,6 +1146,17 @@ document.querySelectorAll('.panel-close').forEach((btn) => {
 $('btn-settings').addEventListener('click', () => openPanel('panel-settings'));
 $('btn-memos').addEventListener('click', () => { renderMemos(); openPanel('panel-memos'); });
 $('btn-history').addEventListener('click', () => { renderHistory(); openPanel('panel-history'); });
+$('btn-packs').addEventListener('click', () => { renderPacks(); openPanel('panel-packs'); });
+
+// パック生成フォーム
+$('gen-type').addEventListener('change', () => {
+  const isGuide = $('gen-type').value === 'guide';
+  $('gen-geo-row').style.display = isGuide ? '' : 'none';
+  $('gen-title-label').textContent = isGuide ? '目的地・タイトル' : 'テーマ・番組名';
+  $('gen-title').placeholder = isGuide ? '例: 四国カルスト' : '例: 日本の峠と酷道の雑学';
+  $('gen-memo-label').textContent = isGuide ? 'ルート・日程・こだわり(自由記入)' : '聴きたい内容(自由記入)';
+});
+$('btn-generate').addEventListener('click', generatePack);
 
 function refreshModeIndicator() {
   el.modeLabel.textContent = settings.mode === 'wake' ? `ウェイクワード「${settings.wakeWord}」` : '常時会話モード';
@@ -776,9 +1230,22 @@ function initSettingsUI() {
 }
 
 // ===================== 起動 =====================
+// 同梱サンプルパックの初回取り込み
+if (!store.get('samplesImported', false) && typeof SAMPLE_PACKS !== 'undefined') {
+  const copies = JSON.parse(JSON.stringify(SAMPLE_PACKS));
+  copies.forEach((p) => {
+    p.createdAt = Date.now();
+    p.tracks.forEach((t) => { t.played = false; });
+  });
+  packs.push(...copies);
+  store.set('samplesImported', true);
+  savePacks();
+}
+
 initSettingsUI();
 refreshModeIndicator();
 renderMemos();
+renderPacks();
 setState('idle');
 
 if ('serviceWorker' in navigator) {

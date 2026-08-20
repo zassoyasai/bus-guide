@@ -1,6 +1,6 @@
 /* ツーリング相棒 service worker — アプリシェルをキャッシュしてオフライン起動可能に */
-const CACHE_NAME = 'touring-buddy-v1';
-const SHELL = ['.', 'index.html', 'style.css', 'app.js', 'manifest.json', 'icon.svg'];
+const CACHE_NAME = 'touring-buddy-v2';
+const SHELL = ['.', 'index.html', 'style.css', 'app.js', 'packs.js', 'manifest.json', 'icon.svg'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE_NAME).then((c) => c.addAll(SHELL)));

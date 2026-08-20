@@ -18,6 +18,7 @@
     <h1>ツーリング相棒</h1>
   </div>
   <div class="header-btns">
+    <button id="btn-packs" class="icon-btn" title="ガイド・ラジオ">🎧</button>
     <button id="btn-memos" class="icon-btn" title="メモ">📝</button>
     <button id="btn-history" class="icon-btn" title="履歴">🕘</button>
     <button id="btn-settings" class="icon-btn" title="設定">⚙️</button>
@@ -50,7 +51,8 @@
 
   <div id="hint">
     出発前にインカムを接続し、ここをタップしてから走り出してください。<br>
-    「メモして◯◯」で音声メモ、「この辺の道の駅は?」で周辺ガイド。
+    「メモして◯◯」で音声メモ、「この辺の道の駅は?」で周辺ガイド。<br>
+    「ガイド再生」「ラジオ流して」「次」「続き」「ストップ」で収録パックを操作。
   </div>
 </main>
 
@@ -122,6 +124,57 @@
   </div>
 </div>
 
+<!-- ===== ガイド・ラジオパネル ===== -->
+<div id="panel-packs" class="panel hidden">
+  <div class="panel-header">
+    <h2>ガイド・ラジオ</h2>
+    <button class="icon-btn panel-close" data-close="panel-packs">✕</button>
+  </div>
+  <div class="panel-body">
+    <p class="note">出発前に生成しておくと、走行中は端末内の読み上げだけで再生されます(電波不要)。走行中は「ガイド再生」「ラジオ流して」「次」「続き」「ストップ」の声で操作できます。</p>
+
+    <div id="pack-list"></div>
+
+    <section class="setting-group">
+      <h3>新しいパックを生成</h3>
+      <label class="setting-row">
+        <span>種別</span>
+        <select id="gen-type">
+          <option value="guide">ツアーガイド(目的地・位置連動)</option>
+          <option value="radio">ラジオ番組(どこでも聴ける)</option>
+        </select>
+      </label>
+      <label class="setting-row">
+        <span id="gen-title-label">目的地・タイトル</span>
+        <input type="text" id="gen-title" placeholder="例: 四国カルスト">
+      </label>
+      <label class="setting-row">
+        <span id="gen-memo-label">ルート・日程・こだわり(自由記入)</span>
+        <textarea id="gen-memo" rows="3" placeholder="例: 9/3〜5、松山から入って高知へ抜ける。グルメ多め、歴史も聞きたい"></textarea>
+      </label>
+      <label class="setting-row">
+        <span>トラック数</span>
+        <select id="gen-count">
+          <option value="8">8(コンパクト)</option>
+          <option value="15" selected>15(標準)</option>
+          <option value="25">25(たっぷり)</option>
+        </select>
+      </label>
+      <label class="setting-row checkbox">
+        <input type="checkbox" id="gen-search" checked>
+        <span>Web検索を使って生成(最新情報を反映。+30〜80円程度)</span>
+      </label>
+      <label class="setting-row checkbox" id="gen-geo-row">
+        <input type="checkbox" id="gen-geo" checked>
+        <span>位置連動(GPSでスポットに近づいたら自動再生)</span>
+      </label>
+      <button id="btn-generate" class="sub-btn">生成開始(Opus 5・数分かかります)</button>
+      <div id="gen-progress" class="note hidden"></div>
+      <p class="note">生成には設定画面のClaude APIキーを使用します。1パックあたり概ね50〜200円。自宅Wi-Fiでの実行がおすすめです。</p>
+    </section>
+  </div>
+</div>
+
 <!-- ===== メモパネル ===== -->
 <div id="panel-memos" class="panel hidden">
   <div class="panel-header">
@@ -154,6 +207,7 @@
 
 <div id="toast" class="hidden"></div>
 
+<script src="packs.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

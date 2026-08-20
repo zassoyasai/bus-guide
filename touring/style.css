@@ -193,7 +193,7 @@ body {
 }
 .setting-row.checkbox input { margin-top: 4px; width: 20px; height: 20px; flex-shrink: 0; }
 
-input[type="text"], input[type="password"], select {
+input[type="text"], input[type="password"], select, textarea {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -241,6 +241,68 @@ input[type="range"] { width: 100%; }
 .turn.user { background: var(--bg2); }
 .turn.ai { background: rgba(47,129,247,0.12); }
 .turn .who { font-size: 0.72rem; color: var(--muted); margin-bottom: 2px; }
+
+/* ===== packs ===== */
+textarea { font-family: inherit; resize: vertical; }
+#pack-list { display: flex; flex-direction: column; gap: 12px; }
+.pack-item {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.pack-item[data-type="guide"] { border-color: rgba(63,185,80,0.45); }
+.pack-item[data-type="radio"] { border-color: rgba(210,153,34,0.45); }
+.pack-item summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  cursor: pointer;
+}
+.pack-item summary::-webkit-details-marker { display: none; }
+.pack-badge {
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 99px;
+  flex-shrink: 0;
+}
+.pack-badge.guide { background: rgba(63,185,80,0.18); color: var(--green); }
+.pack-badge.radio { background: rgba(210,153,34,0.18); color: var(--amber); }
+.pack-title-wrap { flex: 1; min-width: 0; }
+.pack-title { font-size: 0.98rem; font-weight: 600; }
+.pack-sub { font-size: 0.75rem; color: var(--muted); }
+.pack-play-btn {
+  background: var(--accent);
+  border: none;
+  color: #fff;
+  border-radius: 99px;
+  font-size: 0.9rem;
+  font-weight: 700;
+  padding: 8px 14px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.pack-play-btn.playing { background: var(--red); }
+.pack-tracks { border-top: 1px solid var(--border); padding: 8px 14px 12px; }
+.pack-track {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.88rem;
+}
+.pack-track:last-of-type { border-bottom: none; }
+.pack-track .t-status { flex-shrink: 0; width: 1.3em; text-align: center; }
+.pack-track .t-title { flex: 1; min-width: 0; }
+.pack-track .t-title.played { color: var(--muted); }
+.pack-track .t-geo { font-size: 0.72rem; color: var(--muted); flex-shrink: 0; }
+.pack-track button { flex-shrink: 0; font-size: 0.95rem; padding: 4px 8px; }
+.pack-actions { display: flex; gap: 8px; padding-top: 10px; }
+.pack-actions .sub-btn { flex: 1; padding: 9px; font-size: 0.85rem; }
 
 /* ===== toast ===== */
 #toast {
