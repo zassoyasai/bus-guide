@@ -304,6 +304,33 @@ textarea { font-family: inherit; resize: vertical; }
 .pack-actions { display: flex; gap: 8px; padding-top: 10px; }
 .pack-actions .sub-btn { flex: 1; padding: 9px; font-size: 0.85rem; }
 
+/* ===== 分割画面(Googleマップ併用)向けコンパクト表示 ===== */
+@media (max-height: 560px) {
+  #header { padding: 4px 10px; }
+  .header-title h1 { font-size: 0.9rem; }
+  .icon-btn { font-size: 1.05rem; padding: 5px; }
+  #main { padding: 8px 12px 10px; gap: 8px; overflow-y: auto; }
+  #status-text { font-size: 0.9rem; min-height: auto; }
+  .big-btn { width: 92px; height: 92px; border-width: 3px; gap: 2px; }
+  #big-btn-icon { font-size: 1.6rem; }
+  #big-btn-label { font-size: 0.66rem; }
+  #mode-indicator { font-size: 0.72rem; }
+  #hint { display: none; }
+  .line { padding: 7px 10px; border-radius: 9px; }
+  .line-tag { font-size: 0.65rem; margin-bottom: 2px; }
+  .line-text { font-size: 0.92rem; line-height: 1.45; max-height: 4.4em; overflow-y: auto; }
+}
+
+/* さらに低い高さ(3分割など)ではボタンと表示を横並びに */
+@media (max-height: 380px) {
+  #main { flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: flex-start; }
+  #status-text { width: 100%; order: 0; text-align: left; }
+  .big-btn { order: 1; width: 76px; height: 76px; }
+  #mode-indicator { display: none; }
+  #transcript { order: 2; flex: 1; min-width: 0; }
+  .line-text { max-height: 3em; }
+}
+
 /* ===== toast ===== */
 #toast {
   position: fixed;
