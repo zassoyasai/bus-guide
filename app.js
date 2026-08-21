@@ -10,7 +10,7 @@ function defaultStore() {
     cards: {},              // id -> {iv, ease, due, reps, lapses, state, c, w}
     log: {},                // "YYYY-MM-DD" -> {n, r, c, w}
     custom: [],             // ユーザー追加問題
-    settings: { newPerDay: 20, cats: ["gyo", "ken", "hor", "zei"], mode: "auto", retention: 0.9 },
+    settings: { newPerDay: 20, cats: ["gyo", "ken", "hor", "zei"], ranks: ["A", "B", "C"], mode: "auto", retention: 0.9 },
   };
 }
 let store = load();
@@ -164,17 +164,24 @@ function fmtIv(days) {
 // ---------- キュー計算 ----------
 function activeCats() { return store.settings.cats; }
 function inActiveCat(q) { return activeCats().includes(q.cat); }
+function activeRanks() { return store.settings.ranks || ["A", "B", "C"]; }
+function rankOk(q) {
+  const rs = activeRanks();
+  if (rs.length >= 3) return true; // 全選択時はランク未設定カードも含む
+  return !!q.rank && rs.includes(q.rank);
+}
+function inScope(q) { return inActiveCat(q) && rankOk(q); }
 function dueList() {
   const t = todayStr();
   return allQuestions().filter((q) => {
-    if (!inActiveCat(q)) return false;
+    if (!inScope(q)) return false;
     const c = store.cards[q.id];
     return c && c.state !== "new" && c.due && c.due <= t;
   });
 }
 function newList() {
   return allQuestions().filter((q) => {
-    if (!inActiveCat(q)) return false;
+    if (!inScope(q)) return false;
     const c = store.cards[q.id];
     return !c || c.state === "new";
   });
@@ -346,7 +353,7 @@ function buildSession(extra = false) {
       // 新規が尽きていれば、期日が近い復習カードを前倒しで10問
       const t = todayStr();
       const ahead = allQuestions()
-        .filter((q) => inActiveCat(q) && store.cards[q.id] && store.cards[q.id].due > t)
+        .filter((q) => inScope(q) && store.cards[q.id] && store.cards[q.id].due > t)
         .sort((a, b) => (store.cards[a.id].due < store.cards[b.id].due ? -1 : 1))
         .slice(0, 10)
         .map((q) => q.id);
@@ -443,6 +450,32 @@ function renderCatChips() {
         store.settings.cats = cats.filter((c) => c !== code);
       } else {
         store.settings.cats = cats.concat(code);
+      }
+      save();
+      renderHome();
+    });
+    wrap.appendChild(btn);
+  });
+  renderRankChips();
+}
+function renderRankChips() {
+  const hasRanks = store.custom.some((q) => q.rank);
+  document.getElementById("rankFilterWrap").style.display = hasRanks ? "" : "none";
+  if (!hasRanks) return;
+  const wrap = document.getElementById("rankChips");
+  wrap.innerHTML = "";
+  ["A", "B", "C"].forEach((rk) => {
+    const total = store.custom.filter((q) => q.rank === rk).length;
+    const btn = document.createElement("button");
+    btn.className = "chip" + (activeRanks().includes(rk) ? " on" : "");
+    btn.innerHTML = `Rank ${rk}<span class="cnt">${total}問</span>`;
+    btn.addEventListener("click", () => {
+      const rs = activeRanks();
+      if (rs.includes(rk)) {
+        if (rs.length === 1) { toast("最低1つのランクを選んでください"); return; }
+        store.settings.ranks = rs.filter((r) => r !== rk);
+      } else {
+        store.settings.ranks = rs.concat(rk);
       }
       save();
       renderHome();
@@ -931,6 +964,33 @@ document.getElementById("delCardBtn").addEventListener("click", async () => {
   nextQuestion();
 });
 
+// ランク情報の取り込み（ハッシュ→ランクの対応表JSON）
+document.getElementById("rankBtn").addEventListener("click", () => document.getElementById("rankFile").click());
+document.getElementById("rankFile").addEventListener("change", (e) => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const obj = JSON.parse(reader.result);
+      if (!obj || !obj.ranks) throw new Error("bad");
+      let n = 0;
+      imgCards().forEach((c) => {
+        const r = obj.ranks[c.h];
+        if (r === "A" || r === "B" || r === "C") { c.rank = r; n++; }
+      });
+      save();
+      renderSettings();
+      renderHome();
+      toast(n > 0 ? `${n}枚のカードにランクを設定しました` : "対応するカードが見つかりませんでした（先にZIPを取り込んでください）");
+    } catch (err) {
+      toast("ランクファイルを読み取れませんでした");
+    }
+  };
+  reader.readAsText(file);
+});
+
 // 全削除
 document.getElementById("imgDeleteBtn").addEventListener("click", async () => {
   if (!confirm("画像カードとその学習履歴をすべて削除します。よろしいですか？")) return;
@@ -1077,7 +1137,7 @@ function buildSyncPayload() {
   const img = [], text = [];
   store.custom.forEach((c) => {
     const st = store.cards[c.id] || null;
-    if (c.type === "img") img.push({ h: c.h, cat: c.cat, st });
+    if (c.type === "img") img.push({ h: c.h, cat: c.cat, rank: c.rank || null, st });
     else text.push({ q: c.q, a: c.a, e: c.e, cat: c.cat, st });
   });
   return { v: 1, syncedAt: Date.now(), img, text, log: store.log };
@@ -1100,6 +1160,7 @@ function mergeSync(remote) {
       local = { id, cat: r.cat, type: "img", a: true, q: "（画像カード " + id + "）", e: "", h: r.h };
       store.custom.push(local);
     }
+    if (r.rank && !local.rank) local.rank = r.rank;
     const merged = newerState(store.cards[local.id], r.st);
     if (merged) store.cards[local.id] = merged;
   });
