@@ -1206,6 +1206,10 @@ function renderPacks() {
       if (!confirm(`「${pack.title}」を削除しますか?`)) return;
       if (player.packId === pack.id) stopPack(true);
       pack.tracks.forEach((_, i) => adbDel(audioKey(pack.id, i)).catch(() => {}));
+      if (pack.id.startsWith('sample-')) {
+        const removed = store.get('removedSamples', []);
+        if (!removed.includes(pack.id)) { removed.push(pack.id); store.set('removedSamples', removed); }
+      }
       packs = packs.filter((p) => p.id !== pack.id);
       savePacks();
       renderPacks();
@@ -1492,16 +1496,21 @@ function initSettingsUI() {
 }
 
 // ===================== 起動 =====================
-// 同梱サンプルパックの初回取り込み
-if (!store.get('samplesImported', false) && typeof SAMPLE_PACKS !== 'undefined') {
-  const copies = JSON.parse(JSON.stringify(SAMPLE_PACKS));
-  copies.forEach((p) => {
-    p.createdAt = Date.now();
-    p.tracks.forEach((t) => { t.played = false; });
-  });
-  packs.push(...copies);
-  store.set('samplesImported', true);
-  savePacks();
+// 同梱サンプルパックの取り込み(未取り込みのIDだけ追加。削除済みは復活させない)
+if (typeof SAMPLE_PACKS !== 'undefined') {
+  const removed = new Set(store.get('removedSamples', []));
+  const added = [];
+  for (const sp of SAMPLE_PACKS) {
+    if (removed.has(sp.id) || packs.some((p) => p.id === sp.id)) continue;
+    const copy = JSON.parse(JSON.stringify(sp));
+    copy.createdAt = Date.now();
+    copy.tracks.forEach((t) => { t.played = false; });
+    added.push(copy);
+  }
+  if (added.length > 0) {
+    packs.push(...added);
+    savePacks();
+  }
 }
 
 initSettingsUI();
