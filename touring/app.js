@@ -292,6 +292,23 @@ async function azureSynth(text) {
   return await res.blob();
 }
 
+// 長文はAzureの1リクエスト上限(音声10分)を避けるため分割合成して結合する
+// (MP3はフレーム単位の形式なので単純連結で連続再生できる)
+async function synthLongText(text) {
+  const MAX_CHARS = 1200;
+  if (text.length <= MAX_CHARS) return azureSynth(text);
+  const chunks = [];
+  let cur = '';
+  for (const s of splitSentences(text)) {
+    if (cur && (cur + s).length > MAX_CHARS) { chunks.push(cur); cur = s; }
+    else cur += s;
+  }
+  if (cur) chunks.push(cur);
+  const blobs = [];
+  for (const c of chunks) blobs.push(await azureSynth(c));
+  return new Blob(blobs, { type: 'audio/mpeg' });
+}
+
 function playBlobOnce(blob) {
   return new Promise((resolve) => {
     const url = URL.createObjectURL(blob);
@@ -998,7 +1015,22 @@ function extractJson(text) {
   return JSON.parse(text.slice(s, e + 1));
 }
 
-function guideOutlinePrompt(title, memo, count) {
+// トラックの長さプリセット(文字数はTTSでおよそ330文字=1分)
+const LENGTH_SPECS = {
+  short: { name: 'ショート', chars: '250〜350', batch: 5 },
+  standard: { name: 'スタンダード', chars: '600〜900', batch: 3 },
+  long: { name: 'ロング', chars: '1400〜2000', batch: 2 },
+  mix: { name: 'ミックス', chars: null, batch: 3 },
+};
+
+function lengthOutlineNote(lengthKey) {
+  if (lengthKey === 'mix') {
+    return `- 各トラックに "length" を "short"(約1分・小ネタ) / "standard"(約2〜3分・一話完結) / "long"(約5〜7分・深掘り)のいずれかで割り当て、聞き手が飽きないよう長短をリズムよく織り交ぜる(目安: short 4割、standard 4割、long 2割。longは目玉テーマに)`;
+  }
+  return `- 全トラックの "length" は "${lengthKey}"(${LENGTH_SPECS[lengthKey].name}・${LENGTH_SPECS[lengthKey].chars}文字)とする`;
+}
+
+function guideOutlinePrompt(title, memo, count, lengthKey) {
   return `「${title}」へのツーリング向け音声ガイド(バスガイド風)を作ります。
 ライダーのメモ: ${memo || '特になし'}
 
@@ -1008,11 +1040,12 @@ function guideOutlinePrompt(title, memo, count) {
 - 場所に強く紐づくトラックには、その場所の中心の緯度(lat)・経度(lon)と再生トリガー半径radius_km(2〜8)を入れる。位置に自信がない場合はnullにする
 - 導入・総論・まとめなど場所に紐づかないトラックはlat/lon/radius_kmをnull
 - おおよそのルート順(アプローチ→現地→まとめ)に並べる
+${lengthOutlineNote(lengthKey)}
 出力は次の形のJSON配列のみ:
-[{"title":"トラック名","summary":"内容の要点1文","lat":33.5,"lon":132.9,"radius_km":4}]`;
+[{"title":"トラック名","summary":"内容の要点1文","length":"standard","lat":33.5,"lon":132.9,"radius_km":4}]`;
 }
 
-function radioOutlinePrompt(title, memo, count) {
+function radioOutlinePrompt(title, memo, count, lengthKey) {
   return `ツーリング中にどこでも聴ける音声ラジオ番組「${title}」を作ります。
 リスナーの要望メモ: ${memo || '特になし'}
 
@@ -1021,8 +1054,9 @@ function radioOutlinePrompt(title, memo, count) {
 - バイク・道路・地理・歴史・雑学など、走りながら聴いて楽しい話題
 - 1エピソード1テーマで、雑学として満足度が高い切り口にする
 - lat/lon/radius_kmはすべてnull
+${lengthOutlineNote(lengthKey)}
 出力は次の形のJSON配列のみ:
-[{"title":"エピソード名","summary":"内容の要点1文","lat":null,"lon":null,"radius_km":null}]`;
+[{"title":"エピソード名","summary":"内容の要点1文","length":"standard","lat":null,"lon":null,"radius_km":null}]`;
 }
 
 function batchPrompt(type, title, memo, outline, batch) {
@@ -1031,10 +1065,12 @@ function batchPrompt(type, title, memo, outline, batch) {
 リスナーのメモ: ${memo || '特になし'}
 全体の構成: ${JSON.stringify(outline.map((o) => o.title))}
 
-今回執筆するトラック: ${JSON.stringify(batch.map((o) => ({ title: o.title, summary: o.summary })))}
+今回執筆するトラック: ${JSON.stringify(batch.map((o) => ({ title: o.title, summary: o.summary, length: o.length || 'short' })))}
 
 条件:
-- 各トラック300〜500文字。話し言葉の日本語、です・ます調で、バスガイドやラジオDJのような聞いて楽しい語り口
+- 各トラックの文字数はlength指定に従う: short=250〜350文字、standard=600〜900文字、long=1400〜2000文字
+- 話し言葉の日本語、です・ます調で、バスガイドやラジオDJのような聞いて楽しい語り口
+- standard以上は、興味を引く導入、本筋、意外な脇話、締めの一言という流れで単調にならないようにする。longは一本のドキュメンタリー番組のつもりで具体的なエピソードや人物を織り込み、水増しはしない
 - 記号・箇条書き・URL・絵文字は使わない。数字は漢数字など耳で聞いて分かる表現にする
 - 変わりやすい情報(営業時間・料金など)は断定せず、変わりやすいので確認を、と一言添える
 - 運転中でも安全に聞ける内容にし、必要な安全上の注意は自然に織り込む
@@ -1053,6 +1089,8 @@ async function generatePack() {
   const title = $('gen-title').value.trim();
   const memo = $('gen-memo').value.trim();
   const count = Number($('gen-count').value);
+  const lengthKey = $('gen-length').value;
+  const spec = LENGTH_SPECS[lengthKey] || LENGTH_SPECS.mix;
   const useSearch = $('gen-search').checked;
   const geoOn = type === 'guide' && $('gen-geo').checked;
   if (!title) { showToast(type === 'guide' ? '目的地を入力してください' : 'テーマを入力してください'); return; }
@@ -1065,15 +1103,19 @@ async function generatePack() {
   try {
     prog.textContent = '構成(トラック一覧)を作成中…';
     const outlineText = await genApiRequest(
-      type === 'guide' ? guideOutlinePrompt(title, memo, count) : radioOutlinePrompt(title, memo, count),
+      type === 'guide' ? guideOutlinePrompt(title, memo, count, lengthKey) : radioOutlinePrompt(title, memo, count, lengthKey),
       useSearch, (s) => { prog.textContent = `構成を作成中… ${s}`; });
     const outline = extractJson(outlineText).slice(0, count).filter((o) => o && o.title);
     if (outline.length === 0) throw new Error('構成の生成に失敗しました');
+    // 固定長指定のときはoutlineのlengthを上書きしておく
+    if (lengthKey !== 'mix') outline.forEach((o) => { o.length = lengthKey; });
+    outline.forEach((o) => { if (!['short', 'standard', 'long'].includes(o.length)) o.length = 'standard'; });
 
     const tracks = [];
-    for (let i = 0; i < outline.length; i += 5) {
-      const batch = outline.slice(i, i + 5);
-      prog.textContent = `本文を執筆中… ${i + 1}〜${Math.min(i + 5, outline.length)} / ${outline.length}トラック`;
+    const B = spec.batch;
+    for (let i = 0; i < outline.length; i += B) {
+      const batch = outline.slice(i, i + B);
+      prog.textContent = `本文を執筆中… ${i + 1}〜${Math.min(i + B, outline.length)} / ${outline.length}トラック`;
       const items = extractJson(await genApiRequest(batchPrompt(type, title, memo, outline, batch), useSearch));
       batch.forEach((o, k) => {
         const it = items[k] || {};
@@ -1122,7 +1164,7 @@ async function renderPackAudio(pack, btn) {
     for (let i = 0; i < pack.tracks.length; i++) {
       btn.textContent = `音声作成中… ${i + 1}/${pack.tracks.length}`;
       const t = pack.tracks[i];
-      const blob = await azureSynth(sanitizeForSpeech(`${label}、${t.title}。${t.text}`));
+      const blob = await synthLongText(sanitizeForSpeech(`${label}、${t.title}。${t.text}`));
       await adbPut(audioKey(pack.id, i), blob);
     }
     pack.audioReady = true;
@@ -1163,7 +1205,8 @@ function renderPacks() {
     t1.textContent = pack.title;
     const t2 = document.createElement('div');
     t2.className = 'pack-sub';
-    t2.textContent = `${pack.tracks.length}トラック / 再生済み ${played}` + (pack.geoEnabled ? ' / 📍位置連動' : '');
+    const totalMin = Math.max(1, Math.round(pack.tracks.reduce((a, t) => a + t.text.length, 0) / 330));
+    t2.textContent = `${pack.tracks.length}トラック 約${totalMin}分 / 再生済み ${played}` + (pack.geoEnabled ? ' / 📍位置連動' : '');
     titleWrap.append(t1, t2);
     const playBtn = document.createElement('button');
     playBtn.className = 'pack-play-btn';
@@ -1185,7 +1228,7 @@ function renderPacks() {
       tt.textContent = `${i + 1}. ${t.title}`;
       const gg = document.createElement('span');
       gg.className = 't-geo';
-      gg.textContent = t.lat != null ? '📍' : '';
+      gg.textContent = `${Math.max(1, Math.round(t.text.length / 330))}分` + (t.lat != null ? ' 📍' : '');
       const pb = document.createElement('button');
       pb.className = 'icon-btn';
       pb.textContent = '▶';
