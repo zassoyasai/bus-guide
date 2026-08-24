@@ -1021,9 +1021,14 @@ const LENGTH_SPECS = {
   standard: { name: 'スタンダード', chars: '600〜900', batch: 3 },
   long: { name: 'ロング', chars: '1400〜2000', batch: 2 },
   mix: { name: 'ミックス', chars: null, batch: 3 },
+  feature: { name: '特集(章立て)', chars: '1400〜2000', batch: 2 },
 };
 
 function lengthOutlineNote(lengthKey) {
+  if (lengthKey === 'feature') {
+    return `- 全体をひとつの一時間特集番組として章立てする。第一章は導入、最終章は総括とし、章から章へ話が自然に流れる順序にする
+- 各章の "length" は "long"(1400〜2000文字)とする`;
+  }
   if (lengthKey === 'mix') {
     return `- 各トラックに "length" を "short"(約1分・小ネタ) / "standard"(約2〜3分・一話完結) / "long"(約5〜7分・深掘り)のいずれかで割り当て、聞き手が飽きないよう長短をリズムよく織り交ぜる(目安: short 4割、standard 4割、long 2割。longは目玉テーマに)`;
   }
@@ -1088,8 +1093,8 @@ async function generatePack() {
   const type = $('gen-type').value;
   const title = $('gen-title').value.trim();
   const memo = $('gen-memo').value.trim();
-  const count = Number($('gen-count').value);
   const lengthKey = $('gen-length').value;
+  const count = lengthKey === 'feature' ? 10 : Number($('gen-count').value);
   const spec = LENGTH_SPECS[lengthKey] || LENGTH_SPECS.mix;
   const useSearch = $('gen-search').checked;
   const geoOn = type === 'guide' && $('gen-geo').checked;
@@ -1107,8 +1112,8 @@ async function generatePack() {
       useSearch, (s) => { prog.textContent = `構成を作成中… ${s}`; });
     const outline = extractJson(outlineText).slice(0, count).filter((o) => o && o.title);
     if (outline.length === 0) throw new Error('構成の生成に失敗しました');
-    // 固定長指定のときはoutlineのlengthを上書きしておく
-    if (lengthKey !== 'mix') outline.forEach((o) => { o.length = lengthKey; });
+    // 固定長指定のときはoutlineのlengthを上書きしておく(特集はロング相当)
+    if (lengthKey !== 'mix') outline.forEach((o) => { o.length = lengthKey === 'feature' ? 'long' : lengthKey; });
     outline.forEach((o) => { if (!['short', 'standard', 'long'].includes(o.length)) o.length = 'standard'; });
 
     const tracks = [];
@@ -1443,6 +1448,9 @@ $('gen-type').addEventListener('change', () => {
   $('gen-title-label').textContent = isGuide ? '目的地・タイトル' : 'テーマ・番組名';
   $('gen-title').placeholder = isGuide ? '例: 四国カルスト' : '例: 日本の峠と酷道の雑学';
   $('gen-memo-label').textContent = isGuide ? 'ルート・日程・こだわり(自由記入)' : '聴きたい内容(自由記入)';
+});
+$('gen-length').addEventListener('change', () => {
+  $('gen-length-note').style.display = $('gen-length').value === 'feature' ? '' : 'none';
 });
 $('btn-generate').addEventListener('click', generatePack);
 
