@@ -415,6 +415,8 @@ body.studying nav { display: none; }
         <button class="btn btn-ghost" id="tokenSaveBtn">接続</button>
         <button class="btn btn-primary" id="syncBtn">今すぐ同期</button>
       </div>
+      <button class="btn btn-ghost danger" id="syncResetBtn" style="margin-top:8px;">同期リセット（この端末を正とする）</button>
+      <p class="small" style="margin-top:6px;">同期リセットは、この端末に画像があるカードだけを残し、それ以外（古いカードなど）を同期データごと全デバイスから削除します。教材を新版に入れ替えたときの完全移行に使います。</p>
       <p class="small" id="syncStatus" style="margin-top:8px;"></p>
     </div>
 

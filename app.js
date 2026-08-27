@@ -1,7 +1,7 @@
 /* 宅建一問一答 — SM-2ベースの間隔反復(SRS)アプリ */
 "use strict";
 
-const APP_VERSION = "2026.08.26-b";
+const APP_VERSION = "2026.08.26-c";
 const STORE_KEY = "takken1q_v1";
 const MASTER_IV = 21; // この間隔(日)以上で「習得済み」扱い
 
@@ -1300,6 +1300,62 @@ document.getElementById("tokenSaveBtn").addEventListener("click", () => {
   syncNow(false);
 });
 document.getElementById("syncBtn").addEventListener("click", () => syncNow(false));
+
+// 同期リセット：この端末に画像があるカードだけを正とし、それ以外を全デバイスから削除
+document.getElementById("syncResetBtn").addEventListener("click", async () => {
+  if (!store.settings.ghToken) { toast("先にGitHubトークンを設定してください"); return; }
+  if (!confirm("この端末に画像が保存されているカードだけを残し、それ以外のカード（古い教材のカードや画像のないカード）を同期データごと全デバイスから削除します。\n\n※この端末に取り込み済みの教材が「残したい全カード」になっていることを確認してから実行してください。よろしいですか？")) return;
+  if (syncing) return;
+  syncing = true;
+  try {
+    syncStatus("同期リセット中…");
+    // 1) この端末の画像なしカードを削除（削除記録付き）
+    let removed = 0;
+    for (const c of imgCards().slice()) {
+      let blob = null;
+      try { blob = await idbGet(c.id + "_q"); } catch (e) {}
+      if (!blob) { await deleteCard(c.id, true); removed++; }
+    }
+    // 2) 同期データ側にしかないカードも削除記録に追加
+    const id = await findOrCreateGist();
+    const res = await fetch("https://api.github.com/gists/" + id, { headers: ghHeaders() });
+    if (res.ok) {
+      const g = await res.json();
+      const file = g.files && g.files[SYNC_FILE];
+      let remote = null;
+      if (file) {
+        try { remote = file.truncated ? await (await fetch(file.raw_url, { headers: ghHeaders() })).json() : JSON.parse(file.content); } catch (e) {}
+      }
+      const localH = new Set(imgCards().map((c) => c.h));
+      ((remote && remote.img) || []).forEach((r) => {
+        if (r.h && !localH.has(r.h) && !store.tomb.includes(r.h)) store.tomb.push(r.h);
+      });
+      const localQ = new Set(store.custom.filter((c) => c.type !== "img").map((c) => c.q));
+      ((remote && remote.text) || []).forEach((r) => {
+        if (r.q && !localQ.has(r.q) && !store.tombText.includes(r.q)) store.tombText.push(r.q);
+      });
+    }
+    save();
+    // 3) この端末の内容で同期データを上書き
+    const up = await fetch("https://api.github.com/gists/" + id, {
+      method: "PATCH",
+      headers: ghHeaders(),
+      body: JSON.stringify({ files: { [SYNC_FILE]: { content: JSON.stringify(buildSyncPayload()) } } }),
+    });
+    if (!up.ok) throw new Error("同期データの上書きに失敗しました");
+    store.settings.lastSync = Date.now();
+    save();
+    renderHome();
+    renderSettings();
+    syncStatus("同期リセット完了: " + new Date().toLocaleString("ja-JP"));
+    toast(`同期をリセットしました（この端末の${imgCards().length}枚が正になりました${removed ? `・画像なし${removed}枚削除` : ""}）`);
+  } catch (err) {
+    syncStatus("同期リセットに失敗しました" + (err && err.message ? "：" + err.message : ""));
+    toast("同期リセットに失敗しました");
+  } finally {
+    syncing = false;
+  }
+});
 
 // バックアップ
 document.getElementById("exportBtn").addEventListener("click", () => {
