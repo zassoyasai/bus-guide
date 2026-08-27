@@ -1,7 +1,7 @@
 /* 宅建一問一答 — SM-2ベースの間隔反復(SRS)アプリ */
 "use strict";
 
-const APP_VERSION = "2026.08.26-c";
+const APP_VERSION = "2026.08.27-a";
 const STORE_KEY = "takken1q_v1";
 const MASTER_IV = 21; // この間隔(日)以上で「習得済み」扱い
 
@@ -376,7 +376,7 @@ function buildSession(extra = false) {
 }
 
 // ---------- UI: ビュー切替 ----------
-const views = ["home", "study", "done", "crop", "stats", "settings"];
+const views = ["home", "study", "done", "crop", "themes", "stats", "settings"];
 function show(view) {
   views.forEach((v) => document.getElementById("view-" + v).classList.toggle("active", v === view));
   document.body.classList.toggle("studying", view === "study" || view === "done" || view === "crop");
@@ -384,6 +384,7 @@ function show(view) {
     b.classList.toggle("on", b.dataset.nav === view)
   );
   if (view === "home") renderHome();
+  if (view === "themes") renderThemes();
   if (view === "stats") renderStats();
   if (view === "settings") renderSettings();
 }
@@ -424,6 +425,7 @@ function renderHome() {
     extraBtn.style.display = "none";
   }
   document.getElementById("streakTxt").textContent = streakText();
+  document.getElementById("themeBtn").style.display = hasThemes() ? "" : "none";
   renderCatChips();
 }
 function streakText() {
@@ -490,6 +492,94 @@ function renderRankChips() {
     });
     wrap.appendChild(btn);
   });
+}
+
+// ---------- UI: テーマ別学習 ----------
+let openChapter = null;
+function hasThemes() { return store.custom.some((c) => c.ch); }
+function themeTree() {
+  // cat -> ch -> {total, due, sections: {se: {total, due}}}
+  const t = todayStr();
+  const tree = {};
+  store.custom.forEach((q) => {
+    if (!q.ch) return;
+    const card = store.cards[q.id];
+    const isDue = card && card.state !== "new" && card.due && card.due <= t;
+    const cat = tree[q.cat] = tree[q.cat] || {};
+    const ch = cat[q.ch] = cat[q.ch] || { total: 0, due: 0, sections: {} };
+    ch.total++; if (isDue) ch.due++;
+    const se = ch.sections[q.se || q.ch] = ch.sections[q.se || q.ch] || { total: 0, due: 0 };
+    se.total++; if (isDue) se.due++;
+  });
+  return tree;
+}
+function renderThemes() {
+  const wrap = document.getElementById("themeList");
+  wrap.innerHTML = "";
+  const tree = themeTree();
+  Object.keys(CATEGORIES).forEach((cat) => {
+    if (!tree[cat]) return;
+    const catHead = document.createElement("p");
+    catHead.className = "theme-cat";
+    catHead.textContent = catLabel(cat);
+    wrap.appendChild(catHead);
+    const group = document.createElement("div");
+    group.className = "theme-group";
+    Object.entries(tree[cat]).forEach(([ch, info]) => {
+      const key = cat + "|" + ch;
+      const btn = document.createElement("button");
+      btn.className = "theme-ch";
+      btn.innerHTML = `<span>${openChapter === key ? "▾" : "▸"} ${ch}</span><span class="cnt">${info.due ? `<b>要復習${info.due}</b>・` : ""}${info.total}問</span>`;
+      btn.addEventListener("click", () => {
+        openChapter = openChapter === key ? null : key;
+        renderThemes();
+      });
+      group.appendChild(btn);
+      if (openChapter === key) {
+        const secs = Object.entries(info.sections);
+        if (secs.length > 1) {
+          const all = document.createElement("button");
+          all.className = "theme-se";
+          all.innerHTML = `<span>この章ぜんぶ</span><span class="cnt">${info.due ? `<b>要復習${info.due}</b>・` : ""}${info.total}問</span>`;
+          all.addEventListener("click", () => startThemeStudy(cat, ch, null));
+          group.appendChild(all);
+        }
+        secs.forEach(([se, s]) => {
+          const b = document.createElement("button");
+          b.className = "theme-se";
+          b.innerHTML = `<span>${se}</span><span class="cnt">${s.due ? `<b>要復習${s.due}</b>・` : ""}${s.total}問</span>`;
+          b.addEventListener("click", () => startThemeStudy(cat, ch, se));
+          group.appendChild(b);
+        });
+      }
+    });
+    wrap.appendChild(group);
+  });
+  if (!wrap.children.length) {
+    wrap.innerHTML = '<p class="small">テーマ情報がまだありません。設定画面の「ランク・テーマ情報を取り込む（JSON）」で教材情報ファイルを読み込んでください。</p>';
+  }
+}
+document.getElementById("themesBackBtn").addEventListener("click", () => show("home"));
+document.getElementById("themeBtn").addEventListener("click", () => show("themes"));
+
+function startThemeStudy(cat, ch, se) {
+  const t = todayStr();
+  const qs = store.custom.filter((q) => q.cat === cat && q.ch === ch && (se === null || (q.se || q.ch) === se));
+  const due = [], news = [], rest = [];
+  qs.forEach((q) => {
+    const c = store.cards[q.id];
+    if (!c || c.state === "new") news.push(q.id);
+    else if (c.due && c.due <= t) due.push(q.id);
+    else rest.push(q.id);
+  });
+  const byDue = (a, b) => (store.cards[a].due < store.cards[b].due ? -1 : 1);
+  due.sort(byDue);
+  rest.sort(byDue);
+  const queue = due.concat(shuffle(news), rest);
+  if (queue.length === 0) { toast("このテーマには問題がありません"); return; }
+  session = { queue, total: queue.length, correct: 0, wrong: 0, current: null, answered: false, seen: new Set(), theme: se || ch };
+  show("study");
+  nextQuestion();
 }
 
 // ---------- UI: 学習 ----------
@@ -985,16 +1075,21 @@ document.getElementById("rankFile").addEventListener("change", (e) => {
   reader.onload = () => {
     try {
       const obj = JSON.parse(reader.result);
-      if (!obj || !obj.ranks) throw new Error("bad");
-      let n = 0;
+      if (!obj || (!obj.ranks && !obj.topics)) throw new Error("bad");
+      let nRank = 0, nTopic = 0;
       imgCards().forEach((c) => {
-        const r = obj.ranks[c.h];
-        if (r === "A" || r === "B" || r === "C") { c.rank = r; n++; }
+        const r = obj.ranks && obj.ranks[c.h];
+        if (r === "A" || r === "B" || r === "C") { c.rank = r; nRank++; }
+        const t = obj.topics && obj.topics[c.h];
+        if (Array.isArray(t) && t.length === 2) { c.ch = t[0]; c.se = t[1]; nTopic++; }
       });
       save();
       renderSettings();
       renderHome();
-      toast(n > 0 ? `${n}枚のカードにランクを設定しました` : "対応するカードが見つかりませんでした（先にZIPを取り込んでください）");
+      const parts = [];
+      if (nRank) parts.push(`ランク${nRank}枚`);
+      if (nTopic) parts.push(`テーマ${nTopic}枚`);
+      toast(parts.length ? `${parts.join("・")}を設定しました` : "対応するカードが見つかりませんでした（先にZIPを取り込んでください）");
     } catch (err) {
       toast("ランクファイルを読み取れませんでした");
     }
@@ -1171,7 +1266,7 @@ function buildSyncPayload() {
   const img = [], text = [];
   store.custom.forEach((c) => {
     const st = store.cards[c.id] || null;
-    if (c.type === "img") img.push({ h: c.h, cat: c.cat, rank: c.rank || null, st });
+    if (c.type === "img") img.push({ h: c.h, cat: c.cat, rank: c.rank || null, ch: c.ch || null, se: c.se || null, st });
     else text.push({ q: c.q, a: c.a, e: c.e, cat: c.cat, st });
   });
   return { v: 1, syncedAt: Date.now(), img, text, log: store.log, tomb: store.tomb, tombText: store.tombText };
@@ -1202,6 +1297,7 @@ async function mergeSync(remote) {
       store.custom.push(local);
     }
     if (r.rank && !local.rank) local.rank = r.rank;
+    if (r.ch && !local.ch) { local.ch = r.ch; local.se = r.se || null; }
     const merged = newerState(store.cards[local.id], r.st);
     if (merged) store.cards[local.id] = merged;
   });
