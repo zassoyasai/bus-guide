@@ -7,9 +7,11 @@ const MASTER_IV = 21; // この間隔(日)以上で「習得済み」扱い
 // ---------- 永続化 ----------
 function defaultStore() {
   return {
-    cards: {},              // id -> {iv, ease, due, reps, lapses, state, c, w}
+    cards: {},              // id -> {s, d, iv, due, last, reps, lapses, state, c, w}
     log: {},                // "YYYY-MM-DD" -> {n, r, c, w}
     custom: [],             // ユーザー追加問題
+    tomb: [],               // 削除済み画像カードのハッシュ（同期で削除を伝搬させる）
+    tombText: [],           // 削除済みテキスト問題の問題文
     settings: { newPerDay: 20, cats: ["gyo", "ken", "hor", "zei"], ranks: ["A", "B", "C"], mode: "auto", retention: 0.9 },
   };
 }
@@ -300,14 +302,19 @@ async function addImgCard(cat, qBlob, aBlob) {
   const id = nextImgId();
   await Promise.all([idbPut(id + "_q", qBlob), idbPut(id + "_a", aBlob)]);
   store.custom.push({ id, cat, type: "img", a: true, q: "（画像カード " + id + "）", e: "", h });
+  store.tomb = store.tomb.filter((x) => x !== h); // 明示的な再取り込みは削除記録より優先
   save();
   return "added";
 }
-// カード削除（画像カード・追加問題共通）
-async function deleteCard(id) {
+// カード削除（画像カード・追加問題共通）。tomb=trueで削除を同期に伝搬
+async function deleteCard(id, tomb = true) {
   const q = store.custom.find((c) => c.id === id);
   store.custom = store.custom.filter((c) => c.id !== id);
   delete store.cards[id];
+  if (tomb && q) {
+    if (q.type === "img" && q.h && !store.tomb.includes(q.h)) store.tomb.push(q.h);
+    if (q.type !== "img" && !store.tombText.includes(q.q)) store.tombText.push(q.q);
+  }
   save();
   if (q && q.type === "img") {
     try { await idbDel(id + "_q"); await idbDel(id + "_a"); } catch (e) {}
@@ -336,7 +343,7 @@ async function dedupeImgCards(progress) {
     if (score(c) > score(prev)) { toDelete.push(prev); keep.set(c.h, c); }
     else toDelete.push(c);
   }
-  for (const c of toDelete) await deleteCard(c.id);
+  for (const c of toDelete) await deleteCard(c.id, false); // 同一内容が残るので削除記録は付けない
   save();
   return toDelete.length;
 }
@@ -742,6 +749,7 @@ function renderSettings() {
   document.getElementById("imgCount").textContent = nImg > 0 ? `追加済みの画像カード：${nImg}枚` : "";
   document.getElementById("imgDeleteBtn").style.display = nImg > 0 ? "" : "none";
   document.getElementById("imgDedupBtn").style.display = nImg > 0 ? "" : "none";
+  document.getElementById("imgOrphanBtn").style.display = nImg > 0 ? "" : "none";
 }
 document.getElementById("newPerDaySel").addEventListener("change", (e) => {
   store.settings.newPerDay = parseInt(e.target.value, 10);
@@ -806,6 +814,7 @@ function addQuestions(arr, fallbackCat) {
     if (allQuestions().some((q) => q.q === item.q)) { skipped++; return; }
     maxN++;
     store.custom.push({ id: "u" + maxN, cat, a: item.a, q: item.q, e: item.exp || item.e || "" });
+    store.tombText = store.tombText.filter((x) => x !== item.q);
     added++;
   });
   return { added, skipped };
@@ -993,13 +1002,36 @@ document.getElementById("rankFile").addEventListener("change", (e) => {
 
 // 全削除
 document.getElementById("imgDeleteBtn").addEventListener("click", async () => {
-  if (!confirm("画像カードとその学習履歴をすべて削除します。よろしいですか？")) return;
-  imgCards().forEach((q) => { delete store.cards[q.id]; });
+  if (!confirm("画像カードとその学習履歴をすべて削除します。よろしいですか？\n（同期している場合、他のデバイスからも削除されます）")) return;
+  imgCards().forEach((q) => {
+    delete store.cards[q.id];
+    if (q.h && !store.tomb.includes(q.h)) store.tomb.push(q.h);
+  });
   store.custom = store.custom.filter((q) => q.type !== "img");
   save();
   try { await idbClear(); } catch (e) {}
   renderSettings();
   toast("画像カードを削除しました");
+});
+
+// 画像のないカードを削除（同期で復活した旧カードの掃除用）
+document.getElementById("imgOrphanBtn").addEventListener("click", async () => {
+  if (!confirm("この端末に画像が保存されていないカードを、全デバイスから削除します。\n※別の端末で使っている新しいカードのZIPをこの端末にまだ取り込んでいない場合は、先にZIPを取り込んでから実行してください。")) return;
+  const list = imgCards();
+  let removed = 0;
+  for (let i = 0; i < list.length; i++) {
+    const c = list[i];
+    let blob = null;
+    try { blob = await idbGet(c.id + "_q"); } catch (e) {}
+    if (!blob) {
+      await deleteCard(c.id, true);
+      removed++;
+    }
+    if ((i + 1) % 200 === 0) toast(`確認中… ${i + 1}/${list.length}枚`);
+  }
+  renderSettings();
+  renderHome();
+  toast(removed > 0 ? `画像のないカードを${removed}枚削除しました。「今すぐ同期」を実行すると他のデバイスにも反映されます` : "画像のないカードはありませんでした");
 });
 
 // ---------- 切り出しツール ----------
@@ -1140,7 +1172,7 @@ function buildSyncPayload() {
     if (c.type === "img") img.push({ h: c.h, cat: c.cat, rank: c.rank || null, st });
     else text.push({ q: c.q, a: c.a, e: c.e, cat: c.cat, st });
   });
-  return { v: 1, syncedAt: Date.now(), img, text, log: store.log };
+  return { v: 1, syncedAt: Date.now(), img, text, log: store.log, tomb: store.tomb, tombText: store.tombText };
 }
 // 2つのSRS状態のうち「最後に学習した方」を採用
 function newerState(a, b) {
@@ -1150,10 +1182,17 @@ function newerState(a, b) {
   if (la !== lb) return la > lb ? a : b;
   return (b.reps || 0) > (a.reps || 0) ? b : a;
 }
-function mergeSync(remote) {
+async function mergeSync(remote) {
   if (!remote || remote.v !== 1) return;
+  // 削除記録を統合し、該当するローカルカードを削除
+  (remote.tomb || []).forEach((h) => { if (!store.tomb.includes(h)) store.tomb.push(h); });
+  (remote.tombText || []).forEach((q) => { if (!store.tombText.includes(q)) store.tombText.push(q); });
+  for (const c of store.custom.slice()) {
+    if (c.type === "img" && c.h && store.tomb.includes(c.h)) await deleteCard(c.id, false);
+    if (c.type !== "img" && store.tombText.includes(c.q)) await deleteCard(c.id, false);
+  }
   (remote.img || []).forEach((r) => {
-    if (!r.h) return;
+    if (!r.h || store.tomb.includes(r.h)) return; // 削除済みは復活させない
     let local = store.custom.find((c) => c.type === "img" && c.h === r.h);
     if (!local) {
       const id = nextImgId();
@@ -1165,7 +1204,7 @@ function mergeSync(remote) {
     if (merged) store.cards[local.id] = merged;
   });
   (remote.text || []).forEach((r) => {
-    if (!r.q) return;
+    if (!r.q || store.tombText.includes(r.q)) return;
     let local = store.custom.find((c) => c.type !== "img" && c.q === r.q);
     if (!local) {
       const maxN = store.custom.reduce((m, q) => Math.max(m, parseInt(String(q.id).slice(1), 10) || 0), 0);
@@ -1230,7 +1269,7 @@ async function syncNow(silent) {
         try { remote = JSON.parse(file.content); } catch (e) {}
       }
     }
-    mergeSync(remote);
+    await mergeSync(remote);
     save();
     const up = await fetch("https://api.github.com/gists/" + id, {
       method: "PATCH",
