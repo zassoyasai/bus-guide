@@ -1,16 +1,19 @@
 /* 宅建一問一答 — SM-2ベースの間隔反復(SRS)アプリ */
 "use strict";
 
+const APP_VERSION = "2026.08.26-c";
 const STORE_KEY = "takken1q_v1";
 const MASTER_IV = 21; // この間隔(日)以上で「習得済み」扱い
 
 // ---------- 永続化 ----------
 function defaultStore() {
   return {
-    cards: {},              // id -> {iv, ease, due, reps, lapses, state, c, w}
+    cards: {},              // id -> {s, d, iv, due, last, reps, lapses, state, c, w}
     log: {},                // "YYYY-MM-DD" -> {n, r, c, w}
     custom: [],             // ユーザー追加問題
-    settings: { newPerDay: 20, cats: ["gyo", "ken", "hor", "zei"], mode: "auto", retention: 0.9 },
+    tomb: [],               // 削除済み画像カードのハッシュ（同期で削除を伝搬させる）
+    tombText: [],           // 削除済みテキスト問題の問題文
+    settings: { newPerDay: 20, cats: ["gyo", "ken", "hor", "zei"], ranks: ["A", "B", "C"], mode: "auto", retention: 0.9 },
   };
 }
 let store = load();
@@ -164,17 +167,24 @@ function fmtIv(days) {
 // ---------- キュー計算 ----------
 function activeCats() { return store.settings.cats; }
 function inActiveCat(q) { return activeCats().includes(q.cat); }
+function activeRanks() { return store.settings.ranks || ["A", "B", "C"]; }
+function rankOk(q) {
+  const rs = activeRanks();
+  if (rs.length >= 3) return true; // 全選択時はランク未設定カードも含む
+  return !!q.rank && rs.includes(q.rank);
+}
+function inScope(q) { return inActiveCat(q) && rankOk(q); }
 function dueList() {
   const t = todayStr();
   return allQuestions().filter((q) => {
-    if (!inActiveCat(q)) return false;
+    if (!inScope(q)) return false;
     const c = store.cards[q.id];
     return c && c.state !== "new" && c.due && c.due <= t;
   });
 }
 function newList() {
   return allQuestions().filter((q) => {
-    if (!inActiveCat(q)) return false;
+    if (!inScope(q)) return false;
     const c = store.cards[q.id];
     return !c || c.state === "new";
   });
@@ -293,14 +303,19 @@ async function addImgCard(cat, qBlob, aBlob) {
   const id = nextImgId();
   await Promise.all([idbPut(id + "_q", qBlob), idbPut(id + "_a", aBlob)]);
   store.custom.push({ id, cat, type: "img", a: true, q: "（画像カード " + id + "）", e: "", h });
+  store.tomb = store.tomb.filter((x) => x !== h); // 明示的な再取り込みは削除記録より優先
   save();
   return "added";
 }
-// カード削除（画像カード・追加問題共通）
-async function deleteCard(id) {
+// カード削除（画像カード・追加問題共通）。tomb=trueで削除を同期に伝搬
+async function deleteCard(id, tomb = true) {
   const q = store.custom.find((c) => c.id === id);
   store.custom = store.custom.filter((c) => c.id !== id);
   delete store.cards[id];
+  if (tomb && q) {
+    if (q.type === "img" && q.h && !store.tomb.includes(q.h)) store.tomb.push(q.h);
+    if (q.type !== "img" && !store.tombText.includes(q.q)) store.tombText.push(q.q);
+  }
   save();
   if (q && q.type === "img") {
     try { await idbDel(id + "_q"); await idbDel(id + "_a"); } catch (e) {}
@@ -329,7 +344,7 @@ async function dedupeImgCards(progress) {
     if (score(c) > score(prev)) { toDelete.push(prev); keep.set(c.h, c); }
     else toDelete.push(c);
   }
-  for (const c of toDelete) await deleteCard(c.id);
+  for (const c of toDelete) await deleteCard(c.id, false); // 同一内容が残るので削除記録は付けない
   save();
   return toDelete.length;
 }
@@ -346,7 +361,7 @@ function buildSession(extra = false) {
       // 新規が尽きていれば、期日が近い復習カードを前倒しで10問
       const t = todayStr();
       const ahead = allQuestions()
-        .filter((q) => inActiveCat(q) && store.cards[q.id] && store.cards[q.id].due > t)
+        .filter((q) => inScope(q) && store.cards[q.id] && store.cards[q.id].due > t)
         .sort((a, b) => (store.cards[a.id].due < store.cards[b.id].due ? -1 : 1))
         .slice(0, 10)
         .map((q) => q.id);
@@ -443,6 +458,32 @@ function renderCatChips() {
         store.settings.cats = cats.filter((c) => c !== code);
       } else {
         store.settings.cats = cats.concat(code);
+      }
+      save();
+      renderHome();
+    });
+    wrap.appendChild(btn);
+  });
+  renderRankChips();
+}
+function renderRankChips() {
+  const hasRanks = store.custom.some((q) => q.rank);
+  document.getElementById("rankFilterWrap").style.display = hasRanks ? "" : "none";
+  if (!hasRanks) return;
+  const wrap = document.getElementById("rankChips");
+  wrap.innerHTML = "";
+  ["A", "B", "C"].forEach((rk) => {
+    const total = store.custom.filter((q) => q.rank === rk).length;
+    const btn = document.createElement("button");
+    btn.className = "chip" + (activeRanks().includes(rk) ? " on" : "");
+    btn.innerHTML = `Rank ${rk}<span class="cnt">${total}問</span>`;
+    btn.addEventListener("click", () => {
+      const rs = activeRanks();
+      if (rs.includes(rk)) {
+        if (rs.length === 1) { toast("最低1つのランクを選んでください"); return; }
+        store.settings.ranks = rs.filter((r) => r !== rk);
+      } else {
+        store.settings.ranks = rs.concat(rk);
       }
       save();
       renderHome();
@@ -709,6 +750,8 @@ function renderSettings() {
   document.getElementById("imgCount").textContent = nImg > 0 ? `追加済みの画像カード：${nImg}枚` : "";
   document.getElementById("imgDeleteBtn").style.display = nImg > 0 ? "" : "none";
   document.getElementById("imgDedupBtn").style.display = nImg > 0 ? "" : "none";
+  document.getElementById("imgOrphanBtn").style.display = nImg > 0 ? "" : "none";
+  document.getElementById("verTxt").textContent = "アプリバージョン: " + APP_VERSION;
 }
 document.getElementById("newPerDaySel").addEventListener("change", (e) => {
   store.settings.newPerDay = parseInt(e.target.value, 10);
@@ -773,6 +816,7 @@ function addQuestions(arr, fallbackCat) {
     if (allQuestions().some((q) => q.q === item.q)) { skipped++; return; }
     maxN++;
     store.custom.push({ id: "u" + maxN, cat, a: item.a, q: item.q, e: item.exp || item.e || "" });
+    store.tombText = store.tombText.filter((x) => x !== item.q);
     added++;
   });
   return { added, skipped };
@@ -931,15 +975,65 @@ document.getElementById("delCardBtn").addEventListener("click", async () => {
   nextQuestion();
 });
 
+// ランク情報の取り込み（ハッシュ→ランクの対応表JSON）
+document.getElementById("rankBtn").addEventListener("click", () => document.getElementById("rankFile").click());
+document.getElementById("rankFile").addEventListener("change", (e) => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const obj = JSON.parse(reader.result);
+      if (!obj || !obj.ranks) throw new Error("bad");
+      let n = 0;
+      imgCards().forEach((c) => {
+        const r = obj.ranks[c.h];
+        if (r === "A" || r === "B" || r === "C") { c.rank = r; n++; }
+      });
+      save();
+      renderSettings();
+      renderHome();
+      toast(n > 0 ? `${n}枚のカードにランクを設定しました` : "対応するカードが見つかりませんでした（先にZIPを取り込んでください）");
+    } catch (err) {
+      toast("ランクファイルを読み取れませんでした");
+    }
+  };
+  reader.readAsText(file);
+});
+
 // 全削除
 document.getElementById("imgDeleteBtn").addEventListener("click", async () => {
-  if (!confirm("画像カードとその学習履歴をすべて削除します。よろしいですか？")) return;
-  imgCards().forEach((q) => { delete store.cards[q.id]; });
+  if (!confirm("画像カードとその学習履歴をすべて削除します。よろしいですか？\n（同期している場合、他のデバイスからも削除されます）")) return;
+  imgCards().forEach((q) => {
+    delete store.cards[q.id];
+    if (q.h && !store.tomb.includes(q.h)) store.tomb.push(q.h);
+  });
   store.custom = store.custom.filter((q) => q.type !== "img");
   save();
   try { await idbClear(); } catch (e) {}
   renderSettings();
   toast("画像カードを削除しました");
+});
+
+// 画像のないカードを削除（同期で復活した旧カードの掃除用）
+document.getElementById("imgOrphanBtn").addEventListener("click", async () => {
+  if (!confirm("この端末に画像が保存されていないカードを、全デバイスから削除します。\n※別の端末で使っている新しいカードのZIPをこの端末にまだ取り込んでいない場合は、先にZIPを取り込んでから実行してください。")) return;
+  const list = imgCards();
+  let removed = 0;
+  for (let i = 0; i < list.length; i++) {
+    const c = list[i];
+    let blob = null;
+    try { blob = await idbGet(c.id + "_q"); } catch (e) {}
+    if (!blob) {
+      await deleteCard(c.id, true);
+      removed++;
+    }
+    if ((i + 1) % 200 === 0) toast(`確認中… ${i + 1}/${list.length}枚`);
+  }
+  renderSettings();
+  renderHome();
+  toast(removed > 0 ? `画像のないカードを${removed}枚削除しました。「今すぐ同期」を実行すると他のデバイスにも反映されます` : "画像のないカードはありませんでした");
 });
 
 // ---------- 切り出しツール ----------
@@ -1077,10 +1171,10 @@ function buildSyncPayload() {
   const img = [], text = [];
   store.custom.forEach((c) => {
     const st = store.cards[c.id] || null;
-    if (c.type === "img") img.push({ h: c.h, cat: c.cat, st });
+    if (c.type === "img") img.push({ h: c.h, cat: c.cat, rank: c.rank || null, st });
     else text.push({ q: c.q, a: c.a, e: c.e, cat: c.cat, st });
   });
-  return { v: 1, syncedAt: Date.now(), img, text, log: store.log };
+  return { v: 1, syncedAt: Date.now(), img, text, log: store.log, tomb: store.tomb, tombText: store.tombText };
 }
 // 2つのSRS状態のうち「最後に学習した方」を採用
 function newerState(a, b) {
@@ -1090,21 +1184,29 @@ function newerState(a, b) {
   if (la !== lb) return la > lb ? a : b;
   return (b.reps || 0) > (a.reps || 0) ? b : a;
 }
-function mergeSync(remote) {
+async function mergeSync(remote) {
   if (!remote || remote.v !== 1) return;
+  // 削除記録を統合し、該当するローカルカードを削除
+  (remote.tomb || []).forEach((h) => { if (!store.tomb.includes(h)) store.tomb.push(h); });
+  (remote.tombText || []).forEach((q) => { if (!store.tombText.includes(q)) store.tombText.push(q); });
+  for (const c of store.custom.slice()) {
+    if (c.type === "img" && c.h && store.tomb.includes(c.h)) await deleteCard(c.id, false);
+    if (c.type !== "img" && store.tombText.includes(c.q)) await deleteCard(c.id, false);
+  }
   (remote.img || []).forEach((r) => {
-    if (!r.h) return;
+    if (!r.h || store.tomb.includes(r.h)) return; // 削除済みは復活させない
     let local = store.custom.find((c) => c.type === "img" && c.h === r.h);
     if (!local) {
       const id = nextImgId();
       local = { id, cat: r.cat, type: "img", a: true, q: "（画像カード " + id + "）", e: "", h: r.h };
       store.custom.push(local);
     }
+    if (r.rank && !local.rank) local.rank = r.rank;
     const merged = newerState(store.cards[local.id], r.st);
     if (merged) store.cards[local.id] = merged;
   });
   (remote.text || []).forEach((r) => {
-    if (!r.q) return;
+    if (!r.q || store.tombText.includes(r.q)) return;
     let local = store.custom.find((c) => c.type !== "img" && c.q === r.q);
     if (!local) {
       const maxN = store.custom.reduce((m, q) => Math.max(m, parseInt(String(q.id).slice(1), 10) || 0), 0);
@@ -1169,7 +1271,7 @@ async function syncNow(silent) {
         try { remote = JSON.parse(file.content); } catch (e) {}
       }
     }
-    mergeSync(remote);
+    await mergeSync(remote);
     save();
     const up = await fetch("https://api.github.com/gists/" + id, {
       method: "PATCH",
@@ -1198,6 +1300,62 @@ document.getElementById("tokenSaveBtn").addEventListener("click", () => {
   syncNow(false);
 });
 document.getElementById("syncBtn").addEventListener("click", () => syncNow(false));
+
+// 同期リセット：この端末に画像があるカードだけを正とし、それ以外を全デバイスから削除
+document.getElementById("syncResetBtn").addEventListener("click", async () => {
+  if (!store.settings.ghToken) { toast("先にGitHubトークンを設定してください"); return; }
+  if (!confirm("この端末に画像が保存されているカードだけを残し、それ以外のカード（古い教材のカードや画像のないカード）を同期データごと全デバイスから削除します。\n\n※この端末に取り込み済みの教材が「残したい全カード」になっていることを確認してから実行してください。よろしいですか？")) return;
+  if (syncing) return;
+  syncing = true;
+  try {
+    syncStatus("同期リセット中…");
+    // 1) この端末の画像なしカードを削除（削除記録付き）
+    let removed = 0;
+    for (const c of imgCards().slice()) {
+      let blob = null;
+      try { blob = await idbGet(c.id + "_q"); } catch (e) {}
+      if (!blob) { await deleteCard(c.id, true); removed++; }
+    }
+    // 2) 同期データ側にしかないカードも削除記録に追加
+    const id = await findOrCreateGist();
+    const res = await fetch("https://api.github.com/gists/" + id, { headers: ghHeaders() });
+    if (res.ok) {
+      const g = await res.json();
+      const file = g.files && g.files[SYNC_FILE];
+      let remote = null;
+      if (file) {
+        try { remote = file.truncated ? await (await fetch(file.raw_url, { headers: ghHeaders() })).json() : JSON.parse(file.content); } catch (e) {}
+      }
+      const localH = new Set(imgCards().map((c) => c.h));
+      ((remote && remote.img) || []).forEach((r) => {
+        if (r.h && !localH.has(r.h) && !store.tomb.includes(r.h)) store.tomb.push(r.h);
+      });
+      const localQ = new Set(store.custom.filter((c) => c.type !== "img").map((c) => c.q));
+      ((remote && remote.text) || []).forEach((r) => {
+        if (r.q && !localQ.has(r.q) && !store.tombText.includes(r.q)) store.tombText.push(r.q);
+      });
+    }
+    save();
+    // 3) この端末の内容で同期データを上書き
+    const up = await fetch("https://api.github.com/gists/" + id, {
+      method: "PATCH",
+      headers: ghHeaders(),
+      body: JSON.stringify({ files: { [SYNC_FILE]: { content: JSON.stringify(buildSyncPayload()) } } }),
+    });
+    if (!up.ok) throw new Error("同期データの上書きに失敗しました");
+    store.settings.lastSync = Date.now();
+    save();
+    renderHome();
+    renderSettings();
+    syncStatus("同期リセット完了: " + new Date().toLocaleString("ja-JP"));
+    toast(`同期をリセットしました（この端末の${imgCards().length}枚が正になりました${removed ? `・画像なし${removed}枚削除` : ""}）`);
+  } catch (err) {
+    syncStatus("同期リセットに失敗しました" + (err && err.message ? "：" + err.message : ""));
+    toast("同期リセットに失敗しました");
+  } finally {
+    syncing = false;
+  }
+});
 
 // バックアップ
 document.getElementById("exportBtn").addEventListener("click", () => {

@@ -218,6 +218,10 @@ body.studying nav { display: none; }
     <div class="card">
       <h2>出題分野</h2>
       <div class="chips" id="catChips"></div>
+      <div id="rankFilterWrap" style="display:none;">
+        <p class="small" style="margin:12px 0 6px;">重要度（教材のRank）</p>
+        <div class="chips" id="rankChips"></div>
+      </div>
       <p class="small" style="margin-top:10px;">答えを見る前に自力で思い出す「想起練習」を、忘れる直前の間隔で繰り返すFSRSアルゴリズムで出題します。分野は混ぜて出題されます（交互学習）。1日分をこなすだけでOKです。</p>
     </div>
   </section>
@@ -385,12 +389,15 @@ body.studying nav { display: none; }
       <button class="btn btn-primary" id="cropStartBtn">ページ画像から切り出して追加</button>
       <button class="btn btn-ghost" id="zipAddBtn" style="margin-top:8px;">ZIPファイルから一括追加</button>
       <button class="btn btn-ghost" id="pairAddBtn" style="margin-top:8px;">切り出し済み画像をペアで追加</button>
+      <button class="btn btn-ghost" id="rankBtn" style="margin-top:8px;">ランク情報を取り込む（JSON）</button>
+      <input type="file" id="rankFile" accept=".json,application/json" style="display:none;">
       <input type="file" id="cropFile" accept="image/*" style="display:none;">
       <input type="file" id="pairFiles" accept="image/*" multiple style="display:none;">
       <input type="file" id="zipFile" accept=".zip,application/zip" style="display:none;">
       <p class="small" style="margin-top:8px;">「ペアで追加」は、問題画像→解答画像の順に交互に並ぶよう選択してください（ファイル名順に2枚ずつ組になります）。</p>
       <p class="small" id="imgCount" style="margin-top:4px;"></p>
       <button class="btn btn-ghost" id="imgDedupBtn" style="margin-top:8px; display:none;">重複カードを削除</button>
+      <button class="btn btn-ghost danger" id="imgOrphanBtn" style="margin-top:8px; display:none;">画像のないカードを削除</button>
       <button class="btn btn-ghost danger" id="imgDeleteBtn" style="margin-top:8px; display:none;">画像カードを全削除</button>
       <p class="small" style="margin-top:6px;">個別のカードは、学習画面の右上の🗑ボタンで削除できます。</p>
     </div>
@@ -408,6 +415,8 @@ body.studying nav { display: none; }
         <button class="btn btn-ghost" id="tokenSaveBtn">接続</button>
         <button class="btn btn-primary" id="syncBtn">今すぐ同期</button>
       </div>
+      <button class="btn btn-ghost danger" id="syncResetBtn" style="margin-top:8px;">同期リセット（この端末を正とする）</button>
+      <p class="small" style="margin-top:6px;">同期リセットは、この端末に画像があるカードだけを残し、それ以外（古いカードなど）を同期データごと全デバイスから削除します。教材を新版に入れ替えたときの完全移行に使います。</p>
       <p class="small" id="syncStatus" style="margin-top:8px;"></p>
     </div>
 
@@ -421,6 +430,7 @@ body.studying nav { display: none; }
       <button class="btn btn-ghost danger" id="resetBtn" style="margin-top:8px;">学習履歴をリセット</button>
       <p class="small" style="margin-top:10px;">学習データはこの端末のブラウザ内にのみ保存されます。機種変更の前にはバックアップの書出しをおすすめします。</p>
     </div>
+    <p class="small" id="verTxt" style="text-align:center; margin:4px 0 8px;"></p>
   </section>
 </div>
 
