@@ -301,8 +301,8 @@ textarea { font-family: inherit; resize: vertical; }
 .pack-track .t-title.played { color: var(--muted); }
 .pack-track .t-geo { font-size: 0.72rem; color: var(--muted); flex-shrink: 0; }
 .pack-track button { flex-shrink: 0; font-size: 0.95rem; padding: 4px 8px; }
-.pack-actions { display: flex; gap: 8px; padding-top: 10px; }
-.pack-actions .sub-btn { flex: 1; padding: 9px; font-size: 0.85rem; }
+.pack-actions { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 10px; }
+.pack-actions .sub-btn { flex: 1 1 40%; padding: 9px; font-size: 0.85rem; white-space: nowrap; }
 
 /* ===== 分割画面(Googleマップ併用)向けコンパクト表示 ===== */
 @media (max-height: 560px) {

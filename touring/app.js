@@ -278,7 +278,11 @@ function escapeXml(s) {
 
 async function azureSynth(text) {
   const pct = Math.round((settings.rate - 1) * 100);
-  const ssml = `<speak version="1.0" xml:lang="ja-JP"><voice name="${settings.azureVoice}"><prosody rate="${pct >= 0 ? '+' : ''}${pct}%">${escapeXml(text)}</prosody></voice></speak>`;
+  return azureSynthSSML(`<prosody rate="${pct >= 0 ? '+' : ''}${pct}%">${escapeXml(text)}</prosody>`);
+}
+
+async function azureSynthSSML(inner) {
+  const ssml = `<speak version="1.0" xml:lang="ja-JP"><voice name="${settings.azureVoice}">${inner}</voice></speak>`;
   const res = await fetch(`https://${settings.azureRegion}.tts.speech.microsoft.com/cognitiveservices/v1`, {
     method: 'POST',
     headers: {
@@ -1184,6 +1188,141 @@ async function renderPackAudio(pack, btn) {
   }
 }
 
+// ---- MP3書き出し(音楽アプリでのバックグラウンド再生用) ----
+function sanitizeFilename(s) {
+  return s.replace(/[\\/:*?"<>|]/g, '_').trim().slice(0, 60) || 'pack';
+}
+
+function downloadBlob(blob, filename) {
+  const a = document.createElement('a');
+  const url = URL.createObjectURL(blob);
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
+}
+
+async function collectPackBlobs(pack) {
+  const blobs = [];
+  for (let i = 0; i < pack.tracks.length; i++) {
+    const b = await adbGet(audioKey(pack.id, i)).catch(() => null);
+    if (!b) return null;
+    blobs.push(b);
+  }
+  return blobs;
+}
+
+// 章間に挟む1秒の無音(一度作ってIndexedDBに保存)
+async function getSilenceBlob() {
+  let s = await adbGet('_silence1s').catch(() => null);
+  if (s) return s;
+  if (!useAzure()) return null;
+  s = await azureSynthSSML('<break time="1000ms"/>');
+  await adbPut('_silence1s', s).catch(() => {});
+  return s;
+}
+
+// パック全体を1本のMP3に結合してダウンロード
+async function exportPackSingle(pack, btn) {
+  btn.disabled = true;
+  try {
+    const blobs = await collectPackBlobs(pack);
+    if (!blobs) { showToast('先に「🔊 音声を作成」で全トラックを音声化してください', 4500); return; }
+    let silence = null;
+    try { silence = await getSilenceBlob(); } catch { /* 無音なしで続行 */ }
+    const parts = [];
+    blobs.forEach((b, i) => {
+      parts.push(b);
+      if (silence && i < blobs.length - 1) parts.push(silence);
+    });
+    downloadBlob(new Blob(parts, { type: 'audio/mpeg' }), sanitizeFilename(pack.title) + '.mp3');
+    showToast('MP3をダウンロードしました。音楽アプリで開けます');
+  } catch (err) {
+    console.error(err);
+    showToast('書き出しに失敗しました: ' + err.message, 4000);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// トラックごとのMP3をZIPにまとめてダウンロード
+async function exportPackZip(pack, btn) {
+  btn.disabled = true;
+  try {
+    const blobs = await collectPackBlobs(pack);
+    if (!blobs) { showToast('先に「🔊 音声を作成」で全トラックを音声化してください', 4500); return; }
+    const entries = [];
+    for (let i = 0; i < blobs.length; i++) {
+      entries.push({
+        name: `${String(i + 1).padStart(2, '0')} ${sanitizeFilename(pack.tracks[i].title)}.mp3`,
+        data: new Uint8Array(await blobs[i].arrayBuffer()),
+      });
+    }
+    downloadBlob(buildZip(entries), sanitizeFilename(pack.title) + '.zip');
+    showToast('ZIPをダウンロードしました。展開して音楽アプリへ');
+  } catch (err) {
+    console.error(err);
+    showToast('書き出しに失敗しました: ' + err.message, 4000);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// 最小限のZIP作成(無圧縮・UTF-8ファイル名。MP3は圧縮済みなのでstoreで十分)
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+
+function crc32(data) {
+  let c = 0xffffffff;
+  for (let i = 0; i < data.length; i++) c = CRC_TABLE[(c ^ data[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+function buildZip(entries) {
+  const encoder = new TextEncoder();
+  const chunks = [];
+  const central = [];
+  let offset = 0;
+  const u16 = (v) => new Uint8Array([v & 0xff, (v >> 8) & 0xff]);
+  const u32 = (v) => new Uint8Array([v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff, (v >>> 24) & 0xff]);
+  for (const e of entries) {
+    const name = encoder.encode(e.name);
+    const crc = crc32(e.data);
+    const local = [
+      u32(0x04034b50), u16(20), u16(0x0800), u16(0), u16(0), u16(0),
+      u32(crc), u32(e.data.length), u32(e.data.length), u16(name.length), u16(0),
+      name, e.data,
+    ];
+    central.push({ name, crc, size: e.data.length, offset });
+    for (const p of local) { chunks.push(p); offset += p.length; }
+  }
+  const centralStart = offset;
+  let centralSize = 0;
+  for (const c of central) {
+    const rec = [
+      u32(0x02014b50), u16(20), u16(20), u16(0x0800), u16(0), u16(0), u16(0),
+      u32(c.crc), u32(c.size), u32(c.size), u16(c.name.length), u16(0), u16(0),
+      u16(0), u16(0), u32(0), u32(c.offset), c.name,
+    ];
+    for (const p of rec) { chunks.push(p); centralSize += p.length; }
+  }
+  const eocd = [
+    u32(0x06054b50), u16(0), u16(0), u16(central.length), u16(central.length),
+    u32(centralSize), u32(centralStart), u16(0),
+  ];
+  chunks.push(...eocd);
+  return new Blob(chunks, { type: 'application/zip' });
+}
+
 // ---- パック一覧UI ----
 function renderPacks() {
   const wrap = $('pack-list');
@@ -1269,6 +1408,19 @@ function renderPacks() {
       audioBtn.textContent = pack.audioReady ? '🔊 音声を更新' : '🔊 音声を作成';
       audioBtn.onclick = () => renderPackAudio(pack, audioBtn);
       actions.appendChild(audioBtn);
+    }
+    if (pack.audioReady) {
+      const mp3Btn = document.createElement('button');
+      mp3Btn.className = 'sub-btn';
+      mp3Btn.textContent = '💾 通しMP3';
+      mp3Btn.title = 'パック全体を1本のMP3として保存(音楽アプリで再生可)';
+      mp3Btn.onclick = () => exportPackSingle(pack, mp3Btn);
+      const zipBtn = document.createElement('button');
+      zipBtn.className = 'sub-btn';
+      zipBtn.textContent = '💾 曲別ZIP';
+      zipBtn.title = 'トラックごとのMP3をZIPで保存';
+      zipBtn.onclick = () => exportPackZip(pack, zipBtn);
+      actions.append(mp3Btn, zipBtn);
     }
     body.appendChild(actions);
     det.appendChild(body);
