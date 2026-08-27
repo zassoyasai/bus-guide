@@ -1,6 +1,7 @@
 /* 宅建一問一答 — SM-2ベースの間隔反復(SRS)アプリ */
 "use strict";
 
+const APP_VERSION = "2026.08.26-b";
 const STORE_KEY = "takken1q_v1";
 const MASTER_IV = 21; // この間隔(日)以上で「習得済み」扱い
 
@@ -750,6 +751,7 @@ function renderSettings() {
   document.getElementById("imgDeleteBtn").style.display = nImg > 0 ? "" : "none";
   document.getElementById("imgDedupBtn").style.display = nImg > 0 ? "" : "none";
   document.getElementById("imgOrphanBtn").style.display = nImg > 0 ? "" : "none";
+  document.getElementById("verTxt").textContent = "アプリバージョン: " + APP_VERSION;
 }
 document.getElementById("newPerDaySel").addEventListener("change", (e) => {
   store.settings.newPerDay = parseInt(e.target.value, 10);

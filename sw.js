@@ -1,5 +1,5 @@
 /* オフライン対応のService Worker */
-const CACHE = "takken1q-v1";
+const CACHE = "takken1q-v2";
 const ASSETS = ["./", "./index.html", "./app.js", "./data.js", "./manifest.json", "./icon.svg"];
 
 self.addEventListener("install", (e) => {
@@ -20,7 +20,7 @@ self.addEventListener("fetch", (e) => {
   if (e.request.method !== "GET") return;
   if (new URL(e.request.url).origin !== self.location.origin) return;
   e.respondWith(
-    fetch(e.request)
+    fetch(new Request(e.request, { cache: "no-cache" }))
       .then((res) => {
         const copy = res.clone();
         caches.open(CACHE).then((c) => c.put(e.request, copy));
