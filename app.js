@@ -1,7 +1,7 @@
 /* 宅建一問一答 — SM-2ベースの間隔反復(SRS)アプリ */
 "use strict";
 
-const APP_VERSION = "2026.08.27-a";
+const APP_VERSION = "2026.08.27-b";
 const STORE_KEY = "takken1q_v1";
 const MASTER_IV = 21; // この間隔(日)以上で「習得済み」扱い
 
@@ -415,15 +415,18 @@ function renderHome() {
     return;
   }
   startBtn.dataset.mode = "";
-  if (due + newAvail === 0) {
-    startBtn.textContent = "今日の学習は完了 🎉";
+  if (due === 0) {
+    startBtn.textContent = "今日の復習は完了 🎉";
     startBtn.disabled = true;
-    extraBtn.style.display = "block";
   } else {
-    startBtn.textContent = `学習を始める（${due + newAvail}問）`;
+    startBtn.textContent = `復習する（${due}問）`;
     startBtn.disabled = false;
-    extraBtn.style.display = "none";
   }
+  extraBtn.style.display = "none";
+  const randomBtn = document.getElementById("randomBtn");
+  randomBtn.style.display = "";
+  randomBtn.disabled = due + newAvail === 0;
+  randomBtn.textContent = due + newAvail > 0 ? `ランダム学習（復習＋新規 ${due + newAvail}問）` : "ランダム学習（出題なし）";
   document.getElementById("streakTxt").textContent = streakText();
   document.getElementById("themeBtn").style.display = hasThemes() ? "" : "none";
   renderCatChips();
@@ -498,20 +501,31 @@ function renderRankChips() {
 let openChapter = null;
 function hasThemes() { return store.custom.some((c) => c.ch); }
 function themeTree() {
-  // cat -> ch -> {total, due, sections: {se: {total, due}}}
+  // cat -> ch -> {total, due, fresh, sections: {se: {total, due, fresh}}}
   const t = todayStr();
   const tree = {};
   store.custom.forEach((q) => {
     if (!q.ch) return;
     const card = store.cards[q.id];
-    const isDue = card && card.state !== "new" && card.due && card.due <= t;
+    const isNew = !card || card.state === "new";
+    const isDue = !isNew && card.due && card.due <= t;
     const cat = tree[q.cat] = tree[q.cat] || {};
-    const ch = cat[q.ch] = cat[q.ch] || { total: 0, due: 0, sections: {} };
-    ch.total++; if (isDue) ch.due++;
-    const se = ch.sections[q.se || q.ch] = ch.sections[q.se || q.ch] || { total: 0, due: 0 };
-    se.total++; if (isDue) se.due++;
+    const ch = cat[q.ch] = cat[q.ch] || { total: 0, due: 0, fresh: 0, sections: {} };
+    ch.total++; if (isDue) ch.due++; if (isNew) ch.fresh++;
+    const se = ch.sections[q.se || q.ch] = ch.sections[q.se || q.ch] || { total: 0, due: 0, fresh: 0 };
+    se.total++; if (isDue) se.due++; if (isNew) se.fresh++;
   });
   return tree;
+}
+function themeCnt(info) {
+  const parts = [];
+  if (info.due) parts.push(`<b>要復習${info.due}</b>`);
+  if (info.fresh) parts.push(`新規${info.fresh}`);
+  parts.push(`${info.total}問`);
+  return parts.join("・");
+}
+function themeName(name, info) {
+  return (info.fresh === 0 ? "✅ " : "") + name;
 }
 function renderThemes() {
   const wrap = document.getElementById("themeList");
@@ -529,7 +543,7 @@ function renderThemes() {
       const key = cat + "|" + ch;
       const btn = document.createElement("button");
       btn.className = "theme-ch";
-      btn.innerHTML = `<span>${openChapter === key ? "▾" : "▸"} ${ch}</span><span class="cnt">${info.due ? `<b>要復習${info.due}</b>・` : ""}${info.total}問</span>`;
+      btn.innerHTML = `<span>${openChapter === key ? "▾" : "▸"} ${themeName(ch, info)}</span><span class="cnt">${themeCnt(info)}</span>`;
       btn.addEventListener("click", () => {
         openChapter = openChapter === key ? null : key;
         renderThemes();
@@ -540,14 +554,14 @@ function renderThemes() {
         if (secs.length > 1) {
           const all = document.createElement("button");
           all.className = "theme-se";
-          all.innerHTML = `<span>この章ぜんぶ</span><span class="cnt">${info.due ? `<b>要復習${info.due}</b>・` : ""}${info.total}問</span>`;
+          all.innerHTML = `<span>${themeName("この章ぜんぶ", info)}</span><span class="cnt">${themeCnt(info)}</span>`;
           all.addEventListener("click", () => startThemeStudy(cat, ch, null));
           group.appendChild(all);
         }
         secs.forEach(([se, s]) => {
           const b = document.createElement("button");
           b.className = "theme-se";
-          b.innerHTML = `<span>${se}</span><span class="cnt">${s.due ? `<b>要復習${s.due}</b>・` : ""}${s.total}問</span>`;
+          b.innerHTML = `<span>${themeName(se, s)}</span><span class="cnt">${themeCnt(s)}</span>`;
           b.addEventListener("click", () => startThemeStudy(cat, ch, se));
           group.appendChild(b);
         });
@@ -565,6 +579,7 @@ document.getElementById("themeBtn").addEventListener("click", () => show("themes
 function startThemeStudy(cat, ch, se) {
   const t = todayStr();
   const qs = store.custom.filter((q) => q.cat === cat && q.ch === ch && (se === null || (q.se || q.ch) === se));
+  if (qs.length === 0) { toast("このテーマには問題がありません"); return; }
   const due = [], news = [], rest = [];
   qs.forEach((q) => {
     const c = store.cards[q.id];
@@ -574,9 +589,14 @@ function startThemeStudy(cat, ch, se) {
   });
   const byDue = (a, b) => (store.cards[a].due < store.cards[b].due ? -1 : 1);
   due.sort(byDue);
-  rest.sort(byDue);
-  const queue = due.concat(shuffle(news), rest);
-  if (queue.length === 0) { toast("このテーマには問題がありません"); return; }
+  // 通常は「要復習＋新規」のみ（復習の先食いをしない）
+  let queue = due.concat(shuffle(news));
+  if (queue.length === 0) {
+    // 全問学習済み：希望があれば全問を解き直す
+    if (!confirm("このテーマは全問学習済みです。復習期限が来れば「復習する」に出てきます。\n今すぐ全問を解き直しますか？（解き直しの評価も復習スケジュールに反映されます）")) return;
+    rest.sort(byDue);
+    queue = rest;
+  }
   session = { queue, total: queue.length, correct: 0, wrong: 0, current: null, answered: false, seen: new Set(), theme: se || ch };
   show("study");
   nextQuestion();
@@ -585,9 +605,19 @@ function startThemeStudy(cat, ch, se) {
 // ---------- UI: 学習 ----------
 document.getElementById("startBtn").addEventListener("click", (e) => {
   if (e.currentTarget.dataset.mode === "import") { show("settings"); return; }
-  startStudy(false);
+  startReview();
 });
+document.getElementById("randomBtn").addEventListener("click", () => startStudy(false));
 document.getElementById("extraBtn").addEventListener("click", () => startStudy(true));
+
+// 復習モード：期限が来ている問題のみ（新規は含まない）
+function startReview() {
+  const queue = shuffle(dueList().map((q) => q.id));
+  if (queue.length === 0) { toast("今日の復習はありません"); return; }
+  session = { queue, total: queue.length, correct: 0, wrong: 0, current: null, answered: false, seen: new Set(), theme: "復習" };
+  show("study");
+  nextQuestion();
+}
 document.getElementById("quitBtn").addEventListener("click", () => {
   if (session && session.queue.length > 0) {
     if (!confirm("学習を中断しますか？（ここまでの結果は保存されています）")) return;

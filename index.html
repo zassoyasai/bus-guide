@@ -230,8 +230,9 @@ body.studying nav { display: none; }
         <div class="stat-tile"><span class="num" id="newNum">0</span><span class="lbl">新規</span></div>
         <div class="stat-tile"><span class="num" id="doneNum">0</span><span class="lbl">学習済み</span></div>
       </div>
-      <button class="btn btn-primary" id="startBtn">学習を始める</button>
-      <button class="btn btn-ghost" id="themeBtn" style="margin-top:8px; display:none;">テーマを絞って学習する</button>
+      <button class="btn btn-primary" id="startBtn">復習する</button>
+      <button class="btn btn-ghost" id="themeBtn" style="margin-top:8px; display:none;">テーマを絞って学習する（新規学習）</button>
+      <button class="btn btn-ghost" id="randomBtn" style="margin-top:8px; display:none;">ランダム学習（復習＋新規ミックス）</button>
       <button class="btn btn-ghost" id="extraBtn" style="margin-top:8px; display:none;">追加で学習する（＋10問）</button>
       <p class="small" id="streakTxt" style="margin-top:10px;"></p>
     </div>
@@ -326,7 +327,7 @@ body.studying nav { display: none; }
         <h1>テーマ別学習</h1>
       </div>
     </div>
-    <p class="small" style="margin:0 2px 12px;">章をタップすると節が開きます。テーマ学習では、そのテーマの全問題（復習期限が来ていないものも含む）を出題します。評価は通常どおり復習スケジュールに反映されます。</p>
+    <p class="small" style="margin:0 2px 12px;">章をタップすると節が開きます。テーマ学習では「要復習→新規」の順に出題します（復習期限前の問題は出しません）。✅は全問学習済みのテーマです。評価は通常どおり復習スケジュールに反映されます。</p>
     <div id="themeList"></div>
   </section>
 
