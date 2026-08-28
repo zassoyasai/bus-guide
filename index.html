@@ -235,6 +235,7 @@ body.studying nav { display: none; }
       <button class="btn btn-ghost" id="randomBtn" style="margin-top:8px; display:none;">ランダム学習（復習＋新規ミックス）</button>
       <button class="btn btn-ghost" id="extraBtn" style="margin-top:8px; display:none;">追加で学習する（＋10問）</button>
       <p class="small" id="streakTxt" style="margin-top:10px;"></p>
+      <p class="small" id="examTxt" style="margin-top:4px;"></p>
     </div>
 
     <div class="card">
@@ -370,6 +371,10 @@ body.studying nav { display: none; }
           <option value="50">50問</option>
           <option value="9999">無制限</option>
         </select>
+      </div>
+      <div class="set-row">
+        <div>試験日<br><span class="small">ホームにカウントダウンと1日の必要ペースを表示します</span></div>
+        <input type="date" id="examDateInp" style="background:var(--surface2); border:1px solid var(--line); border-radius:10px; padding:8px 10px; font-family:inherit; color:var(--ink);">
       </div>
       <div class="set-row">
         <div>目標保持率<br><span class="small">復習時に覚えていられる確率の目標。高くするほど復習間隔が短くなり、復習量が増えます（90%推奨）</span></div>

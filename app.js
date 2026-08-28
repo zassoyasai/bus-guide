@@ -1,7 +1,7 @@
 /* 宅建一問一答 — SM-2ベースの間隔反復(SRS)アプリ */
 "use strict";
 
-const APP_VERSION = "2026.08.27-b";
+const APP_VERSION = "2026.08.27-c";
 const STORE_KEY = "takken1q_v1";
 const MASTER_IV = 21; // この間隔(日)以上で「習得済み」扱い
 
@@ -13,7 +13,7 @@ function defaultStore() {
     custom: [],             // ユーザー追加問題
     tomb: [],               // 削除済み画像カードのハッシュ（同期で削除を伝搬させる）
     tombText: [],           // 削除済みテキスト問題の問題文
-    settings: { newPerDay: 20, cats: ["gyo", "ken", "hor", "zei"], ranks: ["A", "B", "C"], mode: "auto", retention: 0.9 },
+    settings: { newPerDay: 20, cats: ["gyo", "ken", "hor", "zei"], ranks: ["A", "B", "C"], mode: "auto", retention: 0.9, examDate: "2026-10-18" },
   };
 }
 let store = load();
@@ -428,8 +428,31 @@ function renderHome() {
   randomBtn.disabled = due + newAvail === 0;
   randomBtn.textContent = due + newAvail > 0 ? `ランダム学習（復習＋新規 ${due + newAvail}問）` : "ランダム学習（出題なし）";
   document.getElementById("streakTxt").textContent = streakText();
+  document.getElementById("examTxt").innerHTML = examPaceText();
   document.getElementById("themeBtn").style.display = hasThemes() ? "" : "none";
   renderCatChips();
+}
+// 試験日カウントダウンと必要ペース
+function examPaceText() {
+  const ed = store.settings.examDate;
+  if (!ed) return "";
+  const daysLeft = daysBetween(todayStr(), ed);
+  if (daysLeft < 0) return "";
+  if (daysLeft === 0) return "🌸 いよいよ試験当日です。落ち着いていきましょう！";
+  const freshTotal = allQuestions().filter((q) => {
+    const c = store.cards[q.id];
+    return !c || c.state === "new";
+  }).length;
+  const head = `📅 試験まであと<b>${daysLeft}日</b>`;
+  if (daysLeft <= 14) {
+    return `${head}。新規は止めて、復習に専念する時期です${freshTotal ? `（未学習${freshTotal}問はRank A優先で拾いましょう）` : ""}。`;
+  }
+  if (freshTotal === 0) {
+    return `${head}。全問学習済みです。毎日の復習で仕上げましょう。`;
+  }
+  const runway = daysLeft - 14; // 直前2週間は復習専念
+  const pace = Math.ceil(freshTotal / runway);
+  return `${head}。未学習<b>${freshTotal}問</b> → 1日<b>${pace}問</b>の新規ペースで、試験2週間前に一巡できます。`;
 }
 function streakText() {
   let n = 0;
@@ -859,6 +882,7 @@ function renderStats() {
 function renderSettings() {
   document.getElementById("newPerDaySel").value = String(store.settings.newPerDay);
   document.getElementById("retentionSel").value = retention().toFixed(2);
+  document.getElementById("examDateInp").value = store.settings.examDate || "";
   document.getElementById("ghToken").value = store.settings.ghToken || "";
   syncStatus(store.settings.lastSync
     ? "最終同期: " + new Date(store.settings.lastSync).toLocaleString("ja-JP")
@@ -882,6 +906,11 @@ document.getElementById("retentionSel").addEventListener("change", (e) => {
   store.settings.retention = parseFloat(e.target.value);
   save();
   toast("目標保持率を変更しました（今後の評価から反映されます）");
+});
+document.getElementById("examDateInp").addEventListener("change", (e) => {
+  store.settings.examDate = e.target.value || null;
+  save();
+  toast("試験日を設定しました");
 });
 
 // 問題インポート
