@@ -1,7 +1,7 @@
 /* 宅建一問一答 — SM-2ベースの間隔反復(SRS)アプリ */
 "use strict";
 
-const APP_VERSION = "2026.08.27-c";
+const APP_VERSION = "2026.09.05-a";
 const STORE_KEY = "takken1q_v1";
 const MASTER_IV = 21; // この間隔(日)以上で「習得済み」扱い
 
@@ -13,7 +13,7 @@ function defaultStore() {
     custom: [],             // ユーザー追加問題
     tomb: [],               // 削除済み画像カードのハッシュ（同期で削除を伝搬させる）
     tombText: [],           // 削除済みテキスト問題の問題文
-    settings: { newPerDay: 20, cats: ["gyo", "ken", "hor", "zei"], ranks: ["A", "B", "C"], mode: "auto", retention: 0.9, examDate: "2026-10-18" },
+    settings: { newPerDay: 20, memPerDay: 8, cats: ["gyo", "ken", "hor", "zei"], ranks: ["A", "B", "C"], mode: "auto", retention: 0.9, examDate: "2026-10-18" },
   };
 }
 let store = load();
@@ -173,7 +173,7 @@ function rankOk(q) {
   if (rs.length >= 3) return true; // 全選択時はランク未設定カードも含む
   return !!q.rank && rs.includes(q.rank);
 }
-function inScope(q) { return inActiveCat(q) && rankOk(q); }
+function inScope(q) { return !q.mem && inActiveCat(q) && rankOk(q); }
 function dueList() {
   const t = todayStr();
   return allQuestions().filter((q) => {
@@ -283,10 +283,11 @@ async function pairHash(qBlob, aBlob) {
 }
 // 追加。戻り値: "added"=新規追加 / "restored"=既存カードに画像を復元 /
 //              "recat"=既存カードの分野を修正 / "dup"=完全な重複でスキップ
-async function addImgCard(cat, qBlob, aBlob) {
+async function addImgCard(cat, qBlob, aBlob, mem = false) {
   const h = await pairHash(qBlob, aBlob);
   const existing = store.custom.find((c) => c.type === "img" && c.h === h);
   if (existing) {
+    if (mem && !existing.mem) existing.mem = 1;
     // バックアップ復元後など、メタ情報だけあって画像が無い場合は画像を再接続する
     let restored = false;
     if (!(await idbGet(existing.id + "_q"))) {
@@ -298,11 +299,13 @@ async function addImgCard(cat, qBlob, aBlob) {
       save();
       return restored ? "restored" : "recat";
     }
+    save();
     return restored ? "restored" : "dup";
   }
   const id = nextImgId();
   await Promise.all([idbPut(id + "_q", qBlob), idbPut(id + "_a", aBlob)]);
-  store.custom.push({ id, cat, type: "img", a: true, q: "（画像カード " + id + "）", e: "", h });
+  const label = mem ? "（暗記カード " + id + "）" : "（画像カード " + id + "）";
+  store.custom.push(Object.assign({ id, cat, type: "img", a: true, q: label, e: "", h }, mem ? { mem: 1 } : {}));
   store.tomb = store.tomb.filter((x) => x !== h); // 明示的な再取り込みは削除記録より優先
   save();
   return "added";
@@ -430,7 +433,23 @@ function renderHome() {
   document.getElementById("streakTxt").textContent = streakText();
   document.getElementById("examTxt").innerHTML = examPaceText();
   document.getElementById("themeBtn").style.display = hasThemes() ? "" : "none";
+  renderMemZone();
   renderCatChips();
+}
+// 暗記ゾーン（ホームのカード）
+function renderMemZone() {
+  const wrap = document.getElementById("memZoneCard");
+  const all = memCards();
+  if (all.length === 0) { wrap.style.display = "none"; return; }
+  wrap.style.display = "";
+  const due = memDueList().length;
+  const newAvail = Math.min(memNewList().length, memNewRemainingToday());
+  const mastered = all.filter((q) => store.cards[q.id] && store.cards[q.id].iv >= MASTER_IV).length;
+  document.getElementById("memZoneInfo").textContent =
+    `教材のまとめ表を1枚ずつ暗記します。全${all.length}枚・習得${mastered}枚`;
+  const btn = document.getElementById("memStartBtn");
+  btn.disabled = due + newAvail === 0;
+  btn.textContent = due + newAvail > 0 ? `暗記する（復習${due}＋新規${newAvail}枚）` : "今日の暗記は完了 🎉";
 }
 // 試験日カウントダウンと必要ペース
 function examPaceText() {
@@ -440,6 +459,7 @@ function examPaceText() {
   if (daysLeft < 0) return "";
   if (daysLeft === 0) return "🌸 いよいよ試験当日です。落ち着いていきましょう！";
   const freshTotal = allQuestions().filter((q) => {
+    if (q.mem) return false;
     const c = store.cards[q.id];
     return !c || c.state === "new";
   }).length;
@@ -661,13 +681,16 @@ function nextQuestion() {
   const q = questionById(session.current);
   const card = store.cards[q.id];
   const img = isImgCard(q);
-  document.getElementById("qCat").textContent = catLabel(q.cat);
+  const mem = isMemCard(q);
+  document.getElementById("qCat").textContent = catLabel(q.cat) + (mem ? "・暗記" : "");
   document.getElementById("qNew").style.display = (!card || card.state === "new") ? "" : "none";
   document.getElementById("qText").style.display = img ? "none" : "";
   document.getElementById("qText").textContent = img ? "" : q.q;
   const qImg = document.getElementById("qImg");
   qImg.style.display = img ? "" : "none";
+  qImg.classList.toggle("memblur", mem);
   if (img) showStoredImg(q.id + "_q", qImg);
+  document.getElementById("revealBtn").textContent = mem ? "内容を思い出してから表示する" : "答えを見る";
   document.getElementById("oxRow").style.display = img ? "none" : "";
   document.getElementById("revealRow").style.display = img ? "" : "none";
   document.getElementById("answerArea").style.display = "none";
@@ -684,12 +707,19 @@ document.getElementById("revealBtn").addEventListener("click", () => {
   session.answered = true;
   const q = questionById(session.current);
   const card = getCard(q.id);
+  const mem = isMemCard(q);
   document.getElementById("resultBanner").style.display = "none";
-  document.getElementById("expLabel").textContent = "解答";
+  document.getElementById("expLabel").textContent = mem ? "中身まで思い出せましたか？" : "解答";
   document.getElementById("expText").style.display = "none";
   const aImg = document.getElementById("aImg");
-  aImg.style.display = "";
-  showStoredImg(q.id + "_a", aImg);
+  if (mem) {
+    // 暗記カード：ぼかしを外して同じ画像を見せる（解答画像は無い）
+    document.getElementById("qImg").classList.remove("memblur");
+    aImg.style.display = "none";
+  } else {
+    aImg.style.display = "";
+    showStoredImg(q.id + "_a", aImg);
+  }
   document.getElementById("revealRow").style.display = "none";
   document.getElementById("answerArea").style.display = "";
   const row = document.getElementById("rateRow");
@@ -708,8 +738,13 @@ function gradeSelf(correct, g) {
   if (firstSeen) {
     if (correct) session.correct++; else session.wrong++;
     const log = todayLog();
-    if (wasNew) log.n++; else log.r++;
-    if (correct) log.c++; else log.w++;
+    if (isMemCard(q)) {
+      // 暗記カードは通常の学習集計（1日の新規枠・正答率）とは別に数える
+      if (wasNew) log.mn = (log.mn || 0) + 1; else log.mr = (log.mr || 0) + 1;
+    } else {
+      if (wasNew) log.n++; else log.r++;
+      if (correct) log.c++; else log.w++;
+    }
   }
   if (correct) card.c++; else card.w++;
   grade(g);
@@ -794,7 +829,7 @@ document.getElementById("doneHomeBtn").addEventListener("click", () => show("hom
 
 // ---------- UI: 統計 ----------
 function renderStats() {
-  const qs = allQuestions();
+  const qs = allQuestions().filter((q) => !q.mem); // 暗記カードは別枠
   const learned = qs.filter((q) => store.cards[q.id] && store.cards[q.id].state !== "new");
   const mastered = qs.filter((q) => store.cards[q.id] && store.cards[q.id].iv >= MASTER_IV);
   document.getElementById("stTotal").textContent = qs.length;
@@ -890,8 +925,11 @@ function renderSettings() {
   const textCount = store.custom.filter((q) => q.type !== "img").length;
   document.getElementById("customCount").textContent =
     textCount > 0 ? `追加済みの問題：${textCount}問` : "";
-  const nImg = imgCards().length;
-  document.getElementById("imgCount").textContent = nImg > 0 ? `追加済みの画像カード：${nImg}枚` : "";
+  document.getElementById("memPerDaySel").value = String(memPerDay());
+  const nMem = memCards().length;
+  const nImg = imgCards().length - nMem;
+  document.getElementById("imgCount").textContent =
+    (nImg > 0 ? `追加済みの画像カード：${nImg}枚` : "") + (nMem > 0 ? `${nImg > 0 ? "　" : ""}暗記カード：${nMem}枚` : "");
   document.getElementById("imgDeleteBtn").style.display = nImg > 0 ? "" : "none";
   document.getElementById("imgDedupBtn").style.display = nImg > 0 ? "" : "none";
   document.getElementById("imgOrphanBtn").style.display = nImg > 0 ? "" : "none";
@@ -899,6 +937,11 @@ function renderSettings() {
 }
 document.getElementById("newPerDaySel").addEventListener("change", (e) => {
   store.settings.newPerDay = parseInt(e.target.value, 10);
+  save();
+  toast("設定を保存しました");
+});
+document.getElementById("memPerDaySel").addEventListener("change", (e) => {
+  store.settings.memPerDay = parseInt(e.target.value, 10);
   save();
   toast("設定を保存しました");
 });
@@ -994,6 +1037,35 @@ document.getElementById("importBtn").addEventListener("click", () => {
 
 // ---------- 画像カード ----------
 function imgCards() { return store.custom.filter((q) => q.type === "img"); }
+
+// ---------- 暗記ゾーン（まとめ表の暗記カード。通常の出題とは分離） ----------
+function memCards() { return store.custom.filter((q) => q.type === "img" && q.mem); }
+function isMemCard(q) { return !!(q && q.mem); }
+function memDueList() {
+  const t = todayStr();
+  return memCards().filter((q) => {
+    const c = store.cards[q.id];
+    return c && c.state !== "new" && c.due && c.due <= t;
+  });
+}
+function memNewList() {
+  return memCards().filter((q) => {
+    const c = store.cards[q.id];
+    return !c || c.state === "new";
+  });
+}
+function memPerDay() { return store.settings.memPerDay == null ? 8 : store.settings.memPerDay; }
+function memNewRemainingToday() { return Math.max(0, memPerDay() - (todayLog().mn || 0)); }
+function startMemStudy() {
+  const due = shuffle(memDueList().map((q) => q.id));
+  const news = shuffle(memNewList().map((q) => q.id)).slice(0, memNewRemainingToday());
+  const queue = due.concat(news);
+  if (queue.length === 0) { toast("今日の暗記カードはありません"); return; }
+  session = { queue, total: queue.length, correct: 0, wrong: 0, current: null, answered: false, seen: new Set(), theme: "暗記" };
+  show("study");
+  nextQuestion();
+}
+document.getElementById("memStartBtn").addEventListener("click", startMemStudy);
 
 // ペア追加（ファイル名順に 問題→解答 の2枚組）
 document.getElementById("pairAddBtn").addEventListener("click", () => document.getElementById("pairFiles").click());
@@ -1091,6 +1163,36 @@ document.getElementById("zipFile").addEventListener("change", async (e) => {
     if (recat) parts.push(`${recat}枚の分野を「${catLabel(cat)}」に修正`);
     if (dup) parts.push(`重複${dup}枚スキップ`);
     toast(`画像カード：${parts.join("・")}`);
+  } catch (err) {
+    toast("取り込みに失敗しました：" + (err && err.message ? err.message : "不明なエラー"));
+  }
+});
+
+// 暗記まとめZIP（1枚=1カード）。ファイル名 anki-分野-連番.jpg なら分野を自動判定
+document.getElementById("memZipBtn").addEventListener("click", () => document.getElementById("memZipFile").click());
+document.getElementById("memZipFile").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (!file) return;
+  const fallbackCat = document.getElementById("imgCatSel").value;
+  toast("ZIPを読み込んでいます…");
+  try {
+    const imgs = await readZipImages(file);
+    if (imgs.length === 0) { toast("ZIP内に画像が見つかりませんでした"); return; }
+    let added = 0, dup = 0, restored = 0;
+    for (let i = 0; i < imgs.length; i++) {
+      const m = /^anki[-_](gyo|ken|hor|zei)[-_]/i.exec(imgs[i].name);
+      const cat = m ? m[1].toLowerCase() : fallbackCat;
+      const r = await addImgCard(cat, imgs[i].blob, imgs[i].blob, true);
+      if (r === "added") added++; else if (r === "restored") restored++; else dup++;
+      if ((i + 1) % 50 === 0) toast(`取り込み中… ${i + 1}/${imgs.length}枚`);
+    }
+    renderSettings();
+    renderHome();
+    const parts = [`${added}枚追加`];
+    if (restored) parts.push(`${restored}枚の画像を復元`);
+    if (dup) parts.push(`重複${dup}枚スキップ`);
+    toast(`暗記カード：${parts.join("・")}`);
   } catch (err) {
     toast("取り込みに失敗しました：" + (err && err.message ? err.message : "不明なエラー"));
   }
@@ -1325,7 +1427,7 @@ function buildSyncPayload() {
   const img = [], text = [];
   store.custom.forEach((c) => {
     const st = store.cards[c.id] || null;
-    if (c.type === "img") img.push({ h: c.h, cat: c.cat, rank: c.rank || null, ch: c.ch || null, se: c.se || null, st });
+    if (c.type === "img") img.push({ h: c.h, cat: c.cat, rank: c.rank || null, ch: c.ch || null, se: c.se || null, m: c.mem ? 1 : 0, st });
     else text.push({ q: c.q, a: c.a, e: c.e, cat: c.cat, st });
   });
   return { v: 1, syncedAt: Date.now(), img, text, log: store.log, tomb: store.tomb, tombText: store.tombText };
@@ -1352,9 +1454,11 @@ async function mergeSync(remote) {
     let local = store.custom.find((c) => c.type === "img" && c.h === r.h);
     if (!local) {
       const id = nextImgId();
-      local = { id, cat: r.cat, type: "img", a: true, q: "（画像カード " + id + "）", e: "", h: r.h };
+      local = { id, cat: r.cat, type: "img", a: true, q: (r.m ? "（暗記カード " : "（画像カード ") + id + "）", e: "", h: r.h };
+      if (r.m) local.mem = 1;
       store.custom.push(local);
     }
+    if (r.m && !local.mem) local.mem = 1;
     if (r.rank && !local.rank) local.rank = r.rank;
     if (r.ch && !local.ch) { local.ch = r.ch; local.se = r.se || null; }
     const merged = newerState(store.cards[local.id], r.st);
@@ -1374,7 +1478,8 @@ async function mergeSync(remote) {
   Object.entries(remote.log || {}).forEach(([d, l]) => {
     const cur = store.log[d];
     store.log[d] = cur
-      ? { n: Math.max(cur.n, l.n), r: Math.max(cur.r, l.r), c: Math.max(cur.c, l.c), w: Math.max(cur.w, l.w) }
+      ? { n: Math.max(cur.n, l.n), r: Math.max(cur.r, l.r), c: Math.max(cur.c, l.c), w: Math.max(cur.w, l.w),
+          mn: Math.max(cur.mn || 0, l.mn || 0), mr: Math.max(cur.mr || 0, l.mr || 0) }
       : l;
   });
 }
