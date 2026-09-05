@@ -1,7 +1,7 @@
 /* 宅建一問一答 — SM-2ベースの間隔反復(SRS)アプリ */
 "use strict";
 
-const APP_VERSION = "2026.09.05-a";
+const APP_VERSION = "2026.09.05-b";
 const STORE_KEY = "takken1q_v1";
 const MASTER_IV = 21; // この間隔(日)以上で「習得済み」扱い
 
@@ -687,10 +687,21 @@ function nextQuestion() {
   document.getElementById("qText").style.display = img ? "none" : "";
   document.getElementById("qText").textContent = img ? "" : q.q;
   const qImg = document.getElementById("qImg");
-  qImg.style.display = img ? "" : "none";
-  qImg.classList.toggle("memblur", mem);
-  if (img) showStoredImg(q.id + "_q", qImg);
-  document.getElementById("revealBtn").textContent = mem ? "内容を思い出してから表示する" : "答えを見る";
+  const qCanvas = document.getElementById("qCanvas");
+  const useCanvas = mem && Array.isArray(q.occl) && q.occl.length > 0;
+  qImg.style.display = img && !useCanvas ? "" : "none";
+  qCanvas.style.display = useCanvas ? "" : "none";
+  qImg.classList.toggle("memblur", mem && !useCanvas);
+  if (useCanvas) {
+    drawMemCanvas(q.id, q.occl, true).then((ok) => {
+      if (!ok) { qCanvas.style.display = "none"; qImg.style.display = ""; qImg.classList.add("memblur"); showStoredImg(q.id + "_q", qImg); }
+    });
+  } else if (img) {
+    showStoredImg(q.id + "_q", qImg);
+  }
+  document.getElementById("revealBtn").textContent = mem
+    ? (useCanvas ? "隠した部分を思い出してから表示する" : "内容を思い出してから表示する")
+    : "答えを見る";
   document.getElementById("oxRow").style.display = img ? "none" : "";
   document.getElementById("revealRow").style.display = img ? "" : "none";
   document.getElementById("answerArea").style.display = "none";
@@ -713,7 +724,10 @@ document.getElementById("revealBtn").addEventListener("click", () => {
   document.getElementById("expText").style.display = "none";
   const aImg = document.getElementById("aImg");
   if (mem) {
-    // 暗記カード：ぼかしを外して同じ画像を見せる（解答画像は無い）
+    // 暗記カード：マスク（またはぼかし）を外して同じ画像を見せる（解答画像は無い）
+    if (Array.isArray(q.occl) && q.occl.length > 0 && document.getElementById("qCanvas").style.display !== "none") {
+      drawMemCanvas(q.id, null, false);
+    }
     document.getElementById("qImg").classList.remove("memblur");
     aImg.style.display = "none";
   } else {
@@ -1055,6 +1069,44 @@ function memNewList() {
   });
 }
 function memPerDay() { return store.settings.memPerDay == null ? 8 : store.settings.memPerDay; }
+// 暗記カード：解答セルだけモザイクで隠して描画（masked=falseで全表示）
+async function drawMemCanvas(id, rects, masked) {
+  const cv = document.getElementById("qCanvas");
+  const blob = await idbGet(id + "_q").catch(() => null);
+  if (!blob) return false;
+  const img = await new Promise((res, rej) => {
+    const el = new Image();
+    const url = URL.createObjectURL(blob);
+    el.onload = () => { URL.revokeObjectURL(url); res(el); };
+    el.onerror = rej;
+    el.src = url;
+  });
+  cv.width = img.naturalWidth;
+  cv.height = img.naturalHeight;
+  const ctx = cv.getContext("2d");
+  ctx.drawImage(img, 0, 0);
+  if (masked && rects && rects.length) {
+    const tmp = document.createElement("canvas");
+    const tctx = tmp.getContext("2d");
+    rects.forEach(([x, y, w, h]) => {
+      const px = Math.round(x * cv.width), py = Math.round(y * cv.height);
+      const pw = Math.max(1, Math.round(w * cv.width)), ph = Math.max(1, Math.round(h * cv.height));
+      const sw = Math.max(1, Math.round(pw / 24)), sh = Math.max(1, Math.round(ph / 24));
+      tmp.width = sw; tmp.height = sh;
+      tctx.imageSmoothingEnabled = true;
+      tctx.drawImage(cv, px, py, pw, ph, 0, 0, sw, sh);
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(tmp, 0, 0, sw, sh, px, py, pw, ph);
+      ctx.imageSmoothingEnabled = true;
+      ctx.fillStyle = "rgba(232, 226, 251, 0.55)";
+      ctx.fillRect(px, py, pw, ph);
+      ctx.strokeStyle = "rgba(67, 56, 202, 0.45)";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(px + 1, py + 1, pw - 2, ph - 2);
+    });
+  }
+  return true;
+}
 function memNewRemainingToday() { return Math.max(0, memPerDay() - (todayLog().mn || 0)); }
 function startMemStudy() {
   const due = shuffle(memDueList().map((q) => q.id));
@@ -1236,13 +1288,15 @@ document.getElementById("rankFile").addEventListener("change", (e) => {
   reader.onload = () => {
     try {
       const obj = JSON.parse(reader.result);
-      if (!obj || (!obj.ranks && !obj.topics)) throw new Error("bad");
-      let nRank = 0, nTopic = 0;
+      if (!obj || (!obj.ranks && !obj.topics && !obj.occl)) throw new Error("bad");
+      let nRank = 0, nTopic = 0, nOccl = 0;
       imgCards().forEach((c) => {
         const r = obj.ranks && obj.ranks[c.h];
         if (r === "A" || r === "B" || r === "C") { c.rank = r; nRank++; }
         const t = obj.topics && obj.topics[c.h];
         if (Array.isArray(t) && t.length === 2) { c.ch = t[0]; c.se = t[1]; nTopic++; }
+        const o = obj.occl && obj.occl[c.h];
+        if (Array.isArray(o)) { c.occl = o; nOccl++; }
       });
       save();
       renderSettings();
@@ -1250,6 +1304,7 @@ document.getElementById("rankFile").addEventListener("change", (e) => {
       const parts = [];
       if (nRank) parts.push(`ランク${nRank}枚`);
       if (nTopic) parts.push(`テーマ${nTopic}枚`);
+      if (nOccl) parts.push(`暗記マスク${nOccl}枚`);
       toast(parts.length ? `${parts.join("・")}を設定しました` : "対応するカードが見つかりませんでした（先にZIPを取り込んでください）");
     } catch (err) {
       toast("ランクファイルを読み取れませんでした");
@@ -1427,7 +1482,7 @@ function buildSyncPayload() {
   const img = [], text = [];
   store.custom.forEach((c) => {
     const st = store.cards[c.id] || null;
-    if (c.type === "img") img.push({ h: c.h, cat: c.cat, rank: c.rank || null, ch: c.ch || null, se: c.se || null, m: c.mem ? 1 : 0, st });
+    if (c.type === "img") img.push({ h: c.h, cat: c.cat, rank: c.rank || null, ch: c.ch || null, se: c.se || null, m: c.mem ? 1 : 0, oc: c.occl || null, st });
     else text.push({ q: c.q, a: c.a, e: c.e, cat: c.cat, st });
   });
   return { v: 1, syncedAt: Date.now(), img, text, log: store.log, tomb: store.tomb, tombText: store.tombText };
@@ -1459,6 +1514,7 @@ async function mergeSync(remote) {
       store.custom.push(local);
     }
     if (r.m && !local.mem) local.mem = 1;
+    if (Array.isArray(r.oc) && !local.occl) local.occl = r.oc;
     if (r.rank && !local.rank) local.rank = r.rank;
     if (r.ch && !local.ch) { local.ch = r.ch; local.se = r.se || null; }
     const merged = newerState(store.cards[local.id], r.st);
