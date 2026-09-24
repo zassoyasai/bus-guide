@@ -170,6 +170,8 @@ body {
 .bar-track { height: 10px; background: var(--surface2); border-radius: 99px; overflow: hidden; }
 .bar-fill { height: 100%; background: var(--brand); border-radius: 99px; }
 .bar-fill.mastered { background: var(--good); }
+.bar-fill.weak { background: var(--bad); }
+.unit-row { display: block; width: 100%; text-align: left; background: none; border: none; padding: 0; margin-bottom: 14px; font-family: inherit; color: inherit; cursor: pointer; }
 table.mini { width: 100%; border-collapse: collapse; font-size: .85rem; }
 table.mini td { padding: 6px 4px; border-bottom: 1px solid var(--line); }
 table.mini td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
@@ -354,6 +356,11 @@ body.studying nav { display: none; }
     <div class="card">
       <h2>分野別の進捗</h2>
       <div id="catBars"></div>
+    </div>
+    <div class="card">
+      <h2>単元別の正答率（弱い順）</h2>
+      <p class="small" style="margin-bottom:10px;">正答率が低い単元から並べています。単元をタップすると、その単元だけを苦手な問題から順に復習できます（評価は復習スケジュールにも反映されます）。</p>
+      <div id="unitBars"></div>
     </div>
     <div class="card">
       <h2>これからの復習予定</h2>

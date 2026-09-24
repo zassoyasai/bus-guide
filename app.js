@@ -1,7 +1,7 @@
 /* 宅建一問一答 — SM-2ベースの間隔反復(SRS)アプリ */
 "use strict";
 
-const APP_VERSION = "2026.09.05-b";
+const APP_VERSION = "2026.09.24-a";
 const STORE_KEY = "takken1q_v1";
 const MASTER_IV = 21; // この間隔(日)以上で「習得済み」扱い
 
@@ -842,6 +842,63 @@ function finishSession() {
 document.getElementById("doneHomeBtn").addEventListener("click", () => show("home"));
 
 // ---------- UI: 統計 ----------
+// 単元（節）ごとの正答率を集計。正答率の低い順に返す
+function unitStats() {
+  const map = {};
+  store.custom.forEach((q) => {
+    if (!q.ch || q.mem) return;
+    const se = q.se || q.ch;
+    const key = q.cat + "|" + q.ch + "|" + se;
+    const u = map[key] = map[key] || { cat: q.cat, ch: q.ch, se, n: 0, answered: 0, c: 0, w: 0 };
+    u.n++;
+    const card = store.cards[q.id];
+    if (card && card.c + card.w > 0) { u.answered++; u.c += card.c; u.w += card.w; }
+  });
+  const list = Object.values(map);
+  list.forEach((u) => { u.acc = u.c + u.w > 0 ? u.c / (u.c + u.w) : null; });
+  list.sort((a, b) => {
+    if (a.acc === null) return 1;
+    if (b.acc === null) return -1;
+    return a.acc - b.acc;
+  });
+  return list;
+}
+function renderUnitBars() {
+  const wrap = document.getElementById("unitBars");
+  wrap.innerHTML = "";
+  const list = unitStats();
+  if (list.length === 0) {
+    wrap.innerHTML = '<p class="small">テーマ情報がまだありません。設定画面の「ランク・テーマ情報を取り込む（JSON）」で教材情報ファイルを読み込むと表示されます。</p>';
+    return;
+  }
+  list.forEach((u) => {
+    const pct = u.acc === null ? 0 : Math.round(u.acc * 100);
+    const accTxt = u.acc === null ? "未学習" : pct + "%";
+    const cls = u.acc !== null && pct < 70 ? "bar-fill weak" : "bar-fill";
+    const row = document.createElement("button");
+    row.className = "unit-row";
+    row.innerHTML = `
+      <div class="bar-head"><b>${u.se}</b><span class="muted">${catLabel(u.cat)} ・ ${u.n}問 ・ ${accTxt}</span></div>
+      <div class="bar-track"><div class="${cls}" style="width:${pct}%"></div></div>`;
+    row.addEventListener("click", () => startWeakStudy(u.cat, u.ch, u.se));
+    wrap.appendChild(row);
+  });
+}
+// 弱点復習：単元の全問を、正答率の低い問題から順に出題（確認ダイアログなし）
+function startWeakStudy(cat, ch, se) {
+  const qs = store.custom.filter((q) => !q.mem && q.cat === cat && q.ch === ch && (q.se || q.ch) === se);
+  if (qs.length === 0) { toast("この単元には問題がありません"); return; }
+  const acc = (q) => {
+    const c = store.cards[q.id];
+    if (!c || c.c + c.w === 0) return -1; // 未解答は最優先
+    return c.c / (c.c + c.w);
+  };
+  const queue = qs.sort((a, b) => acc(a) - acc(b)).map((q) => q.id);
+  session = { queue, total: queue.length, correct: 0, wrong: 0, current: null, answered: false, seen: new Set(), theme: se };
+  show("study");
+  nextQuestion();
+}
+
 function renderStats() {
   const qs = allQuestions().filter((q) => !q.mem); // 暗記カードは別枠
   const learned = qs.filter((q) => store.cards[q.id] && store.cards[q.id].state !== "new");
@@ -871,6 +928,9 @@ function renderStats() {
       <div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div>`;
     bars.appendChild(div);
   });
+
+  // 単元別の正答率（弱い順）。タップでその単元の弱点復習を開始
+  renderUnitBars();
 
   // 復習予定（7日分）
   const ft = document.getElementById("forecastTable");
