@@ -1,7 +1,7 @@
 /* 宅建一問一答 — SM-2ベースの間隔反復(SRS)アプリ */
 "use strict";
 
-const APP_VERSION = "2026.09.24-a";
+const APP_VERSION = "2026.09.26-a";
 const STORE_KEY = "takken1q_v1";
 const MASTER_IV = 21; // この間隔(日)以上で「習得済み」扱い
 
@@ -386,6 +386,7 @@ function show(view) {
   document.querySelectorAll("nav button").forEach((b) =>
     b.classList.toggle("on", b.dataset.nav === view)
   );
+  if (view === "study" && session && session.current === null) undoInfo = null; // 新しいセッション開始時に前回分をクリア
   if (view === "home") renderHome();
   if (view === "themes") renderThemes();
   if (view === "stats") renderStats();
@@ -666,6 +667,8 @@ document.getElementById("quitBtn").addEventListener("click", () => {
     if (!confirm("学習を中断しますか？（ここまでの結果は保存されています）")) return;
   }
   session = null;
+  undoInfo = null;
+  lastSession = null;
   show("home");
 });
 function startStudy(extra) {
@@ -674,10 +677,59 @@ function startStudy(extra) {
   show("study");
   nextQuestion();
 }
+// 誤タップ取り消し：直前に評価した1問の「評価前の状態」を保持する
+let undoInfo = null;     // 確定した取り消し対象（直前の1問）
+let pendingSnap = null;  // 表示中の問題の評価前スナップショット
+let lastSession = null;  // 完了画面から戻るためのセッション退避
+function deepCopy(x) { return x == null ? null : JSON.parse(JSON.stringify(x)); }
+function makeSnap(id) {
+  return {
+    id,
+    card: deepCopy(store.cards[id]),
+    log: deepCopy(todayLog()),
+    correct: session.correct,
+    wrong: session.wrong,
+    seen: session.seen.has(id),
+    queue: session.queue.slice(),
+    total: session.total,
+  };
+}
+function updateUndoBtn() {
+  document.getElementById("undoBtn").style.display = undoInfo ? "" : "none";
+}
+function undoLast(fromDone) {
+  if (!undoInfo) return;
+  const u = undoInfo;
+  undoInfo = null;
+  if (fromDone && !session && lastSession) { session = lastSession; lastSession = null; }
+  if (!session) return;
+  if (u.card) store.cards[u.id] = u.card; else delete store.cards[u.id];
+  store.log[todayStr()] = u.log;
+  session.correct = u.correct;
+  session.wrong = u.wrong;
+  if (!u.seen) session.seen.delete(u.id);
+  session.queue = u.queue.filter((id) => questionById(id)); // 削除済みカードは除外
+  session.total = u.total;
+  session.current = u.id;
+  session.answered = false;
+  pendingSnap = makeSnap(u.id); // 再評価に備えてスナップショットを取り直す
+  save();
+  if (fromDone) show("study");
+  renderQuestion();
+  toast("直前の評価を取り消しました。もう一度評価してください");
+}
+document.getElementById("undoBtn").addEventListener("click", () => undoLast(false));
+document.getElementById("doneUndoBtn").addEventListener("click", () => undoLast(true));
+
 function nextQuestion() {
   if (!session || session.queue.length === 0) { finishSession(); return; }
   session.current = session.queue.shift();
+  if (!questionById(session.current)) { nextQuestion(); return; } // 削除済みカードはスキップ
   session.answered = false;
+  pendingSnap = makeSnap(session.current);
+  renderQuestion();
+}
+function renderQuestion() {
   const q = questionById(session.current);
   const card = store.cards[q.id];
   const img = isImgCard(q);
@@ -708,6 +760,7 @@ function nextQuestion() {
   const done = session.total - session.queue.length - 1;
   document.getElementById("progFill").style.width = `${(done / session.total) * 100}%`;
   document.getElementById("remainTxt").textContent = `残り ${session.queue.length + 1}`;
+  updateUndoBtn();
 }
 document.getElementById("btnO").addEventListener("click", () => answer(true));
 document.getElementById("btnX").addEventListener("click", () => answer(false));
@@ -826,11 +879,14 @@ function grade(g) {
     session.total++; // 進捗バー整合のため
   }
   save();
+  undoInfo = pendingSnap; // この評価を1手だけ取り消せるようにする
   nextQuestion();
 }
 function finishSession() {
   const s = session;
   session = null;
+  lastSession = undoInfo ? s : null; // 完了画面からの取り消し用
+  document.getElementById("doneUndoBtn").style.display = undoInfo ? "" : "none";
   const total = s.correct + s.wrong;
   document.getElementById("doneCorrect").textContent = s.correct;
   document.getElementById("doneWrong").textContent = s.wrong;

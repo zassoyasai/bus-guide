@@ -99,6 +99,7 @@ body {
 .study-top { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
 #quitBtn { background: none; border: none; font-size: 1.3rem; color: var(--ink3); cursor: pointer; padding: 4px 8px; }
 #delCardBtn { background: none; border: none; font-size: 1.1rem; color: var(--ink3); cursor: pointer; padding: 4px 6px; }
+#undoBtn { background: none; border: none; font-size: 1.15rem; color: var(--ink3); cursor: pointer; padding: 4px 6px; }
 .progressbar { flex: 1; height: 8px; background: var(--surface2); border-radius: 99px; overflow: hidden; }
 .progressbar > div { height: 100%; background: var(--brand); border-radius: 99px; width: 0%; transition: width .25s ease; }
 #remainTxt { font-size: .8rem; color: var(--ink2); font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -264,6 +265,7 @@ body.studying nav { display: none; }
       <button id="quitBtn" title="学習を中断">✕</button>
       <div class="progressbar"><div id="progFill"></div></div>
       <span id="remainTxt"></span>
+      <button id="undoBtn" title="直前の評価を取り消す" style="display:none;">↩︎</button>
       <button id="delCardBtn" title="このカードを削除">🗑</button>
     </div>
     <div class="card">
@@ -305,6 +307,7 @@ body.studying nav { display: none; }
         <div class="stat-tile"><span class="num" id="doneAcc">-</span><span class="lbl">正答率</span></div>
       </div>
       <button class="btn btn-primary" id="doneHomeBtn" style="margin-top:10px;">ホームへ戻る</button>
+      <button class="btn btn-ghost" id="doneUndoBtn" style="margin-top:8px; display:none;">↩︎ 最後の評価を取り消して再開</button>
     </div>
   </section>
 
